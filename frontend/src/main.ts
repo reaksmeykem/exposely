@@ -12,6 +12,8 @@ interface Notice {
 interface UIState {
   appState: AppState | null;
   selectedProjectId: string | null;
+  activeTab: 'overview' | 'settings' | 'logs';
+  projectMenuOpen: boolean;
   editorOpen: boolean;
   editorMode: 'create' | 'edit';
   editorProject: ProjectPreset;
@@ -32,6 +34,8 @@ const blankProject = (): ProjectPreset => ({
 const state: UIState = {
   appState: null,
   selectedProjectId: null,
+  activeTab: 'overview',
+  projectMenuOpen: false,
   editorOpen: false,
   editorMode: 'create',
   editorProject: blankProject(),
@@ -222,115 +226,157 @@ function render() {
         </aside>
 
         <section class="content-column">
-          <article class="panel selected-panel">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Selected project</p>
-                <h2>${escapeHtml(project?.displayName || 'No project selected')}</h2>
-              </div>
-              <span class="pill pill-outline">${escapeHtml(project ? shareModeLabel(project.shareMode) : 'n/a')}</span>
-            </div>
-
-            ${
-              project
-                ? `
-                  <div class="hero-project">
-                    <div class="hero-project-main">
-                      <strong>${escapeHtml(project.localHost)}</strong>
-                      <p>${escapeHtml(projectUrl || 'No public URL assigned yet')}</p>
-                    </div>
-                    <div class="host-tags">
-                      <span>${escapeHtml(project.subdomain || 'dynamic subdomain')}</span>
-                      <span>${escapeHtml(project.projectPath)}</span>
-                    </div>
-                  </div>
-
-                  <div class="metric-grid">
-                    <div class="metric-card">
-                      <span class="summary-label">Origin service</span>
-                      <strong>${escapeHtml(appState.settings.defaultServiceURL)}</strong>
-                      <p>Requests are forwarded here with the Herd host header override.</p>
-                    </div>
-                    <div class="metric-card">
-                      <span class="summary-label">Host header</span>
-                      <strong>${escapeHtml(project.localHost)}</strong>
-                      <p>Applied via <code>originRequest.httpHostHeader</code>.</p>
-                    </div>
-                    <div class="metric-card">
-                      <span class="summary-label">Connected routes</span>
-                      <strong>${escapeHtml(String(tunnelStatus.activeHostnames.length))}</strong>
-                      <p>${escapeHtml(tunnelStatus.activeHostnames.join(', ') || 'No ingress hostnames currently loaded.')}</p>
-                    </div>
-                  </div>
-
-                  <div class="action-cluster">
-                    <div class="cluster-block">
-                      <span class="cluster-title">Sharing</span>
-                      <div class="action-row">
-                        <button type="button" data-action="share-project">Share Selected Project</button>
-                        <button type="button" class="secondary" data-action="share-random">Random URL</button>
-                        <button type="button" class="secondary" data-action="share-quick">Quick Tunnel</button>
-                        <button type="button" class="secondary" data-action="open-url">Open URL</button>
-                        <button type="button" class="secondary" data-action="copy-url">Copy URL</button>
-                      </div>
-                    </div>
-                    <div class="cluster-block">
-                      <span class="cluster-title">Project tools</span>
-                      <div class="action-row">
-                        <button type="button" class="secondary" data-action="npm-build">Run npm build</button>
-                        <button type="button" class="secondary" data-action="test-project">Test local URL</button>
-                        <button type="button" class="secondary" data-action="edit-project">Edit Project</button>
-                        <button type="button" class="danger" data-action="delete-project">Delete Project</button>
-                      </div>
-                    </div>
-                  </div>
-                `
-                : '<p class="empty-copy">Create or select a project to start sharing.</p>'
-            }
-          </article>
-
-          <div class="sub-grid">
-            <article class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Tunnel context</p>
-                  <h2>Routes and runtime</h2>
-                </div>
-                <span class="pill ${tunnelStatus.running ? 'pill-success' : 'pill-muted'}">${escapeHtml(tunnelStatus.running ? 'running' : 'stopped')}</span>
-              </div>
-              <div class="status-grid">
-                <div><label>Config file</label><strong>${escapeHtml(appState.configPath)}</strong></div>
-                <div><label>Cloudflared path</label><strong>${escapeHtml(appState.cloudflaredPath || 'not detected')}</strong></div>
-              </div>
-              <div class="status-list">
-                <label>Loaded hostnames</label>
-                <div class="host-tags">
-                  ${tunnelStatus.activeHostnames.length ? tunnelStatus.activeHostnames.map((hostname) => `<span>${escapeHtml(hostname)}</span>`).join('') : '<span>none</span>'}
-                </div>
-              </div>
-              <div class="action-row">
-                <button type="button" class="secondary" data-action="open-config">Open Config</button>
-                <button type="button" class="secondary" data-action="open-settings">Open Settings</button>
-              </div>
-              ${tunnelStatus.lastError ? `<p class="error-copy">${escapeHtml(tunnelStatus.lastError)}</p>` : ''}
-            </article>
-
-            <article class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Defaults</p>
-                  <h2>App settings</h2>
-                </div>
-              </div>
-              <form id="settings-form" class="form-grid">
-                <label>Default domain<input name="defaultDomain" value="${escapeHtml(appState.settings.defaultDomain)}" /></label>
-                <label>Tunnel name<input name="tunnelName" value="${escapeHtml(appState.settings.tunnelName)}" /></label>
-                <label>Cloudflared path<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="Leave blank to use PATH" /></label>
-                <label>Local service URL<input name="defaultServiceURL" value="${escapeHtml(appState.settings.defaultServiceURL)}" /></label>
-                <div class="action-row wide"><button type="submit">Save Settings</button></div>
-              </form>
-            </article>
+          <div class="tabs-bar">
+            <button type="button" class="tab-button ${state.activeTab === 'overview' ? 'active' : ''}" data-action="tab-overview">Overview</button>
+            <button type="button" class="tab-button ${state.activeTab === 'settings' ? 'active' : ''}" data-action="tab-settings">Settings</button>
+            <button type="button" class="tab-button ${state.activeTab === 'logs' ? 'active' : ''}" data-action="tab-logs">Logs</button>
           </div>
+
+          ${
+            state.activeTab === 'overview'
+              ? `
+                <article class="panel selected-panel">
+                  <div class="panel-header">
+                    <div>
+                      <p class="eyebrow">Selected project</p>
+                      <h2>${escapeHtml(project?.displayName || 'No project selected')}</h2>
+                    </div>
+                    <div class="selected-header-actions">
+                      <span class="pill pill-outline">${escapeHtml(project ? shareModeLabel(project.shareMode) : 'n/a')}</span>
+                      ${
+                        project
+                          ? `
+                            <div class="dropdown">
+                              <button type="button" class="secondary menu-button" data-action="toggle-project-menu">Manage</button>
+                              ${
+                                state.projectMenuOpen
+                                  ? `
+                                    <div class="dropdown-menu">
+                                      <button type="button" class="dropdown-item" data-action="edit-project">Edit project</button>
+                                      <button type="button" class="dropdown-item danger-item" data-action="delete-project">Delete project</button>
+                                    </div>
+                                  `
+                                  : ''
+                              }
+                            </div>
+                          `
+                          : ''
+                      }
+                    </div>
+                  </div>
+
+                  ${
+                    project
+                      ? `
+                        <div class="hero-project">
+                          <div class="hero-project-main">
+                            <strong>${escapeHtml(project.localHost)}</strong>
+                            <p>${escapeHtml(projectUrl || 'No public URL assigned yet')}</p>
+                          </div>
+                          <div class="host-tags">
+                            <span>${escapeHtml(project.subdomain || 'dynamic subdomain')}</span>
+                            <span>${escapeHtml(project.projectPath)}</span>
+                          </div>
+                        </div>
+
+                        <div class="metric-grid">
+                          <div class="metric-card">
+                            <span class="summary-label">Origin service</span>
+                            <strong>${escapeHtml(appState.settings.defaultServiceURL)}</strong>
+                            <p>Requests are forwarded here with the Herd host header override.</p>
+                          </div>
+                          <div class="metric-card">
+                            <span class="summary-label">Host header</span>
+                            <strong>${escapeHtml(project.localHost)}</strong>
+                            <p>Applied via <code>originRequest.httpHostHeader</code>.</p>
+                          </div>
+                          <div class="metric-card">
+                            <span class="summary-label">Connected routes</span>
+                            <strong>${escapeHtml(String(tunnelStatus.activeHostnames.length))}</strong>
+                            <p>${escapeHtml(tunnelStatus.activeHostnames.join(', ') || 'No ingress hostnames currently loaded.')}</p>
+                          </div>
+                        </div>
+
+                        <div class="action-cluster">
+                          <div class="cluster-block">
+                            <span class="cluster-title">Sharing</span>
+                            <div class="action-row">
+                              <button type="button" data-action="share-project">Share Selected Project</button>
+                              <button type="button" class="secondary" data-action="share-random">Random URL</button>
+                              <button type="button" class="secondary" data-action="share-quick">Quick Tunnel</button>
+                              <button type="button" class="secondary" data-action="open-url">Open URL</button>
+                              <button type="button" class="secondary" data-action="copy-url">Copy URL</button>
+                            </div>
+                          </div>
+                          <div class="cluster-block">
+                            <span class="cluster-title">Project tools</span>
+                            <div class="action-row">
+                              <button type="button" class="secondary" data-action="npm-build">Run npm build</button>
+                              <button type="button" class="secondary" data-action="test-project">Test local URL</button>
+                            </div>
+                          </div>
+                        </div>
+                      `
+                      : '<p class="empty-copy">Create or select a project to start sharing.</p>'
+                  }
+                </article>
+
+                <article class="panel compact-panel">
+                  <div class="panel-header">
+                    <div>
+                      <p class="eyebrow">Tunnel context</p>
+                      <h2>Routes and runtime</h2>
+                    </div>
+                    <span class="pill ${tunnelStatus.running ? 'pill-success' : 'pill-muted'}">${escapeHtml(tunnelStatus.running ? 'running' : 'stopped')}</span>
+                  </div>
+                  <div class="status-grid two-column">
+                    <div><label>Config file</label><strong>${escapeHtml(appState.configPath)}</strong></div>
+                    <div><label>Cloudflared path</label><strong>${escapeHtml(appState.cloudflaredPath || 'not detected')}</strong></div>
+                  </div>
+                  <div class="status-list">
+                    <label>Loaded hostnames</label>
+                    <div class="host-tags">
+                      ${tunnelStatus.activeHostnames.length ? tunnelStatus.activeHostnames.map((hostname) => `<span>${escapeHtml(hostname)}</span>`).join('') : '<span>none</span>'}
+                    </div>
+                  </div>
+                  <div class="action-row">
+                    <button type="button" class="secondary" data-action="open-config">Open Config</button>
+                    <button type="button" class="secondary" data-action="open-settings">Open Settings</button>
+                  </div>
+                  ${tunnelStatus.lastError ? `<p class="error-copy">${escapeHtml(tunnelStatus.lastError)}</p>` : ''}
+                </article>
+              `
+              : state.activeTab === 'settings'
+                ? `
+                  <article class="panel compact-panel">
+                    <div class="panel-header">
+                      <div>
+                        <p class="eyebrow">Defaults</p>
+                        <h2>App settings</h2>
+                      </div>
+                    </div>
+                    <form id="settings-form" class="form-grid">
+                      <label>Default domain<input name="defaultDomain" value="${escapeHtml(appState.settings.defaultDomain)}" /></label>
+                      <label>Tunnel name<input name="tunnelName" value="${escapeHtml(appState.settings.tunnelName)}" /></label>
+                      <label>Cloudflared path<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="Leave blank to use PATH" /></label>
+                      <label>Local service URL<input name="defaultServiceURL" value="${escapeHtml(appState.settings.defaultServiceURL)}" /></label>
+                      <div class="action-row wide"><button type="submit">Save Settings</button></div>
+                    </form>
+                  </article>
+                `
+                : `
+                  <section class="panel logs-panel">
+                    <div class="panel-header">
+                      <div>
+                        <p class="eyebrow">Logs</p>
+                        <h2>cloudflared and npm output</h2>
+                      </div>
+                      <span class="pill pill-outline">${escapeHtml(`${appState.status.lastLogs.length} entries`)}</span>
+                    </div>
+                    <div class="log-stream">${logRows(appState.status.lastLogs)}</div>
+                  </section>
+                `
+          }
 
           ${
             state.editorOpen
@@ -369,17 +415,6 @@ function render() {
             `
               : ''
           }
-
-          <section class="panel logs-panel">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Logs</p>
-                <h2>cloudflared and npm output</h2>
-              </div>
-              <span class="pill pill-outline">${escapeHtml(`${appState.status.lastLogs.length} entries`)}</span>
-            </div>
-            <div class="log-stream">${logRows(appState.status.lastLogs)}</div>
-          </section>
         </section>
       </section>
 
@@ -469,8 +504,28 @@ function bindForms() {
 
 async function handleAction(action: string, id: string | null) {
   switch (action) {
+    case 'tab-overview':
+      state.activeTab = 'overview';
+      state.projectMenuOpen = false;
+      render();
+      return;
+    case 'tab-settings':
+      state.activeTab = 'settings';
+      state.projectMenuOpen = false;
+      render();
+      return;
+    case 'tab-logs':
+      state.activeTab = 'logs';
+      state.projectMenuOpen = false;
+      render();
+      return;
+    case 'toggle-project-menu':
+      state.projectMenuOpen = !state.projectMenuOpen;
+      render();
+      return;
     case 'select-project':
       state.selectedProjectId = id ?? null;
+      state.projectMenuOpen = false;
       render();
       return;
     case 'new-project':
@@ -484,6 +539,7 @@ async function handleAction(action: string, id: string | null) {
         state.editorOpen = true;
         state.editorMode = 'edit';
         state.editorProject = { ...selectedProject()! };
+        state.projectMenuOpen = false;
         render();
       }
       return;
@@ -501,6 +557,7 @@ async function handleAction(action: string, id: string | null) {
       return;
     }
     case 'copy-url': {
+      state.projectMenuOpen = false;
       const project = selectedProject();
       if (!project || !state.appState) return;
       const url = formatProjectURL(project, state.appState.settings.defaultDomain);
@@ -598,6 +655,7 @@ async function handleAction(action: string, id: string | null) {
         if (next) {
           state.appState = next;
           state.selectedProjectId = next.settings.projects[0]?.id ?? null;
+          state.projectMenuOpen = false;
           setNotice('success', 'Project deleted');
         }
       }
@@ -607,6 +665,13 @@ async function handleAction(action: string, id: string | null) {
 
 root.addEventListener('click', (event) => {
   const target = event.target as HTMLElement | null;
+  const insideDropdown = target?.closest('.dropdown');
+  if (state.projectMenuOpen && !insideDropdown) {
+    state.projectMenuOpen = false;
+    render();
+    return;
+  }
+
   const actionElement = target?.closest<HTMLElement>('[data-action]');
   if (!actionElement) return;
 
