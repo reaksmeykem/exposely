@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820" fill="none">
+  <rect width="1280" height="820" fill="#F2ECDF"/>
+  <rect x="28" y="24" width="1224" height="110" rx="28" fill="#FFF9F1" stroke="#D8D0C2"/>
+  <rect x="28" y="154" width="760" height="230" rx="24" fill="#FFF9F1" stroke="#D8D0C2"/>
+  <rect x="808" y="154" width="444" height="230" rx="24" fill="#FFF9F1" stroke="#D8D0C2"/>
+  <rect x="28" y="404" width="460" height="260" rx="24" fill="#FFF9F1" stroke="#D8D0C2"/>
+  <rect x="508" y="404" width="744" height="260" rx="24" fill="#FFF9F1" stroke="#D8D0C2"/>
+  <rect x="28" y="684" width="1224" height="108" rx="24" fill="#FFF9F1" stroke="#D8D0C2"/>
+  <text x="58" y="72" fill="#122026" font-size="34" font-family="Segoe UI, sans-serif">Cloudflare Tunnel Manager for Laravel Herd</text>
+  <text x="58" y="102" fill="#647076" font-size="18" font-family="Segoe UI, sans-serif">Status, saved projects, share actions, logs, and config controls in one window.</text>
+  <text x="56" y="192" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">TUNNEL STATUS</text>
+  <text x="56" y="228" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">laravel-herd</text>
+  <text x="836" y="192" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">SETTINGS</text>
+  <text x="836" y="228" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">Defaults</text>
+  <text x="56" y="442" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">PROJECT PRESETS</text>
+  <text x="56" y="478" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">Laravel Herd apps</text>
+  <text x="536" y="442" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">SELECTED PROJECT</text>
+  <text x="536" y="478" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">HR System</text>
+  <text x="56" y="722" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">LOGS</text>
+  <text x="56" y="758" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">cloudflared and npm output</text>
+  <rect x="56" y="500" width="404" height="52" rx="16" fill="#DDF0E6"/>
+  <rect x="56" y="564" width="404" height="52" rx="16" fill="#F7F3EB"/>
+  <rect x="534" y="542" width="170" height="42" rx="21" fill="#122026"/>
+  <rect x="718" y="542" width="190" height="42" rx="21" fill="#FFF" stroke="#D8D0C2"/>
+  <rect x="922" y="542" width="144" height="42" rx="21" fill="#FFF" stroke="#D8D0C2"/>
+  <rect x="1080" y="542" width="144" height="42" rx="21" fill="#FFF" stroke="#D8D0C2"/>
+</svg>
