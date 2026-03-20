@@ -174,6 +174,7 @@ export namespace models {
 	    configReadError: string;
 	    buildRunning: boolean;
 	    buildCommandDetected: boolean;
+	    productVersion: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppState(source);
@@ -194,6 +195,7 @@ export namespace models {
 	        this.configReadError = source["configReadError"];
 	        this.buildRunning = source["buildRunning"];
 	        this.buildCommandDetected = source["buildCommandDetected"];
+	        this.productVersion = source["productVersion"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

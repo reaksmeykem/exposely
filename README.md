@@ -4,7 +4,7 @@ Windows desktop MVP for managing Cloudflare Tunnel against local Laravel Herd si
 
 ## What this MVP does
 
-- Detects `cloudflared` from `PATH`, a configured executable path, or common Windows install paths.
+- Detects user-installed `cloudflared` from `PATH`, a configured executable path, or common Windows install paths.
 - Persists project presets and app defaults in `%AppData%\CloudflareTunnelManager\settings.json`.
 - Reads and writes `%USERPROFILE%\.cloudflared\config.yml`.
 - Supports multiple ingress rules in one named tunnel config.
@@ -14,7 +14,6 @@ Windows desktop MVP for managing Cloudflare Tunnel against local Laravel Herd si
 - Supports:
   - stable hostnames such as `app.reaksmeykem.dev`
   - generated random hostnames under your domain such as `x8f3k2.reaksmeykem.dev`
-  - Cloudflare quick tunnels via `trycloudflare.com`
 - Opens public URLs and the Cloudflare config file from the UI.
 - Tests the local Herd site by calling the configured origin URL with the selected `Host` header.
 
@@ -67,13 +66,13 @@ Windows desktop MVP for managing Cloudflare Tunnel against local Laravel Herd si
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 ```
 
-4. Install `cloudflared` and log in:
+4. Install `cloudflared` and log in with your own Cloudflare account:
 
 ```powershell
 cloudflared login
 ```
 
-5. If you want stable or random hostnames under your own domain, make sure:
+5. Before using the app, make sure:
    - the domain is on Cloudflare
    - you have permissions to create DNS records
    - the local tunnel credentials JSON exists or can be created
@@ -125,12 +124,6 @@ ingress:
 
 The app generates a random subdomain, adds a DNS route for it, writes the matching ingress rule, and starts the named tunnel.
 
-### Quick tunnel mode
-
-The app starts `cloudflared tunnel --url <service>`.
-
-Cloudflare documents quick tunnels as development-only and notes that quick tunnels are not supported when a config file is present in the default `.cloudflared` directory. To avoid colliding with your named tunnel config, this MVP launches quick tunnel subprocesses with an isolated temporary home directory.
-
 ## Default settings
 
 The app boots with these defaults, which you can change in the UI:
@@ -144,7 +137,7 @@ The app boots with these defaults, which you can change in the UI:
 - No Windows system tray integration yet.
 - No Windows login auto-start yet.
 - No full Cloudflare API integration; the MVP relies on the CLI only.
-- Quick tunnel host-header override is implemented with the CLI flag expected to map to `httpHostHeader`, but the primary Laravel Herd path should be the named tunnel modes because they use explicit ingress config.
+- Every user must install `cloudflared` and authenticate with their own Cloudflare account; the app no longer downloads a managed copy.
 - The frontend is written against Wails runtime globals, so opening `frontend/index.html` directly in a normal browser will not work.
 
 ## Error handling covered

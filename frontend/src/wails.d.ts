@@ -7,6 +7,7 @@ declare global {
         App?: {
           Bootstrap(): Promise<AppState>;
           RefreshState(): Promise<AppState>;
+          InstallCloudflared(): Promise<AppState>;
           SaveSettings(settings: AppSettings): Promise<AppState>;
           SaveProject(project: ProjectPreset): Promise<AppState>;
           DeleteProject(id: string): Promise<AppState>;

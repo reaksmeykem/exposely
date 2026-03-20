@@ -5,7 +5,11 @@ type AppBindings = NonNullable<NonNullable<NonNullable<typeof window.go>['main']
 function appBinding(): AppBindings {
   const binding = window.go?.main?.App;
   if (!binding) {
-    throw new Error('Wails bindings are not available. Run the project with `wails dev` or `wails build`.');
+    const isWails = !!(window as any).wails || !!(window as any).runtime;
+    if (isWails) {
+        throw new Error('Wails bindings are not yet available. This might happen if Bootstrap is called too early.');
+    }
+    throw new Error('Wails bindings are not available. Please ensure you are running the application via Wails.');
   }
   return binding;
 }
@@ -14,6 +18,7 @@ export const api = {
   bootstrap: (): Promise<AppState> => appBinding().Bootstrap(),
   refreshState: (): Promise<AppState> => appBinding().RefreshState(),
   ensureCloudflared: (): Promise<AppState> => (appBinding() as AppBindings & { EnsureCloudflared(): Promise<AppState> }).EnsureCloudflared(),
+  installCloudflared: (): Promise<AppState> => (appBinding() as AppBindings & { InstallCloudflared(): Promise<AppState> }).InstallCloudflared(),
   saveSettings: (settings: AppSettings): Promise<AppState> => appBinding().SaveSettings(settings),
   saveProject: (project: ProjectPreset): Promise<AppState> => appBinding().SaveProject(project),
   deleteProject: (id: string): Promise<AppState> => appBinding().DeleteProject(id),

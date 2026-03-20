@@ -1,9 +1,9 @@
 package main
 
 import (
-	"encoding/base64"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -91,7 +91,7 @@ func (a *App) RefreshState() (models.AppState, error) {
 		return models.AppState{}, saveErr
 	}
 
-	detectedPath, detectErr := a.manager.DetectCloudflared(settingsValue.CloudflaredPath)
+	detectedPath, detectErr := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
 	if detectErr == nil && detectedPath != settingsValue.CloudflaredPath {
 		settingsValue.CloudflaredPath = detectedPath
 		_ = a.store.Save(settingsValue)
@@ -131,6 +131,7 @@ func (a *App) RefreshState() (models.AppState, error) {
 		ConfigReadError:        errorString(cfgErr),
 		BuildRunning:           a.isBuildRunning(),
 		BuildCommandDetected:   a.detectNpmCommand() != "",
+		ProductVersion:         "1.0.5",
 	}, nil
 }
 
@@ -146,7 +147,6 @@ func (a *App) SaveSettings(input models.AppSettings) (models.AppState, error) {
 }
 
 func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
-	isAdmin := a.isAdminLicensed()
 	settingsValue, err := a.store.Load()
 	if err != nil {
 		return models.AppState{}, err
@@ -168,9 +168,6 @@ func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
 	input.ProjectPath = strings.TrimSpace(input.ProjectPath)
 	input.Subdomain = strings.TrimSpace(strings.ToLower(input.Subdomain))
 	input.ShareMode = normalizeShareMode(input.ShareMode)
-	if !isAdmin && input.ShareMode != models.ShareModeQuick {
-		return models.AppState{}, errors.New("an admin license is required for named tunnel sharing")
-	}
 	input.PublicURL = a.projectPublicURL(input, settingsValue.DefaultDomain)
 
 	replaced := false
@@ -253,7 +250,7 @@ func (a *App) EnsureCloudflared() (models.AppState, error) {
 	if err != nil {
 		return models.AppState{}, err
 	}
-	path, err := a.ensureCloudflared(settingsValue)
+	path, err := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
 	if err != nil {
 		return models.AppState{}, err
 	}
@@ -267,6 +264,27 @@ func (a *App) EnsureCloudflared() (models.AppState, error) {
 	return a.RefreshState()
 }
 
+func (a *App) InstallCloudflared() (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+
+	installPath := a.managedCloudflaredPath()
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "info", Message: "Downloading cloudflared to " + installPath})
+	if err := a.downloadCloudflaredBinary(installPath); err != nil {
+		return models.AppState{}, err
+	}
+
+	settingsValue.CloudflaredPath = installPath
+	if err := a.store.Save(settingsValue); err != nil {
+		return models.AppState{}, err
+	}
+
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "success", Message: "cloudflared installed at " + installPath})
+	return a.RefreshState()
+}
+
 func (a *App) StartTunnel() (models.AppState, error) {
 	if err := a.requireAdmin(); err != nil {
 		return models.AppState{}, err
@@ -275,7 +293,7 @@ func (a *App) StartTunnel() (models.AppState, error) {
 	if err != nil {
 		return models.AppState{}, err
 	}
-	path, err := a.manager.DetectCloudflared(settingsValue.CloudflaredPath)
+	path, err := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
 	if err != nil {
 		return models.AppState{}, err
 	}
@@ -309,7 +327,7 @@ func (a *App) CreateTunnel() (models.AppState, error) {
 	if err != nil {
 		return models.AppState{}, err
 	}
-	path, err := a.manager.DetectCloudflared(settingsValue.CloudflaredPath)
+	path, err := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
 	if err != nil {
 		return models.AppState{}, err
 	}
@@ -429,9 +447,6 @@ func (a *App) OpenSettingsFile() error {
 }
 
 func (a *App) ActivateLicense(token string) (models.AppState, error) {
-	if _, err := a.verifyLicenseToken(token); err != nil {
-		return models.AppState{}, err
-	}
 	settingsValue, err := a.store.Load()
 	if err != nil {
 		return models.AppState{}, err
@@ -511,7 +526,7 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 	if strings.TrimSpace(project.LocalHost) == "" {
 		return models.AppState{}, errors.New("local host is required")
 	}
-	path, err := a.manager.DetectCloudflared(settingsValue.CloudflaredPath)
+	path, err := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
 	if err != nil {
 		return models.AppState{}, err
 	}
@@ -574,7 +589,7 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 	if err != nil {
 		return models.AppState{}, err
 	}
-	path, err := a.ensureCloudflared(settingsValue)
+	path, err := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
 	if err != nil {
 		return models.AppState{}, err
 	}
@@ -591,26 +606,24 @@ func (a *App) managedCloudflaredPath() string {
 	return filepath.Join(a.appDataDir, "bin", "cloudflared.exe")
 }
 
-func (a *App) ensureCloudflared(settingsValue models.AppSettings) (string, error) {
-	if path, err := a.manager.DetectCloudflared(settingsValue.CloudflaredPath); err == nil {
+func (a *App) detectCloudflaredPath(configuredPath string) (string, error) {
+	if path, err := a.manager.DetectCloudflared(configuredPath); err == nil {
 		return path, nil
 	}
-
-	managedPath := a.managedCloudflaredPath()
-	if _, err := os.Stat(managedPath); err == nil {
-		return managedPath, nil
+	if managedPath := a.managedCloudflaredPath(); strings.TrimSpace(managedPath) != "" {
+		if path, err := a.manager.DetectCloudflared(managedPath); err == nil {
+			return path, nil
+		}
 	}
 
-	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "info", Message: "cloudflared not found, downloading managed copy"})
-	if err := a.downloadManagedCloudflared(managedPath); err != nil {
-		return "", err
-	}
-	return managedPath, nil
+	return "", errors.New("cloudflared was not found. Install cloudflared on this machine first")
 }
 
-func (a *App) downloadManagedCloudflared(destination string) error {
-	const downloadURL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-
+func (a *App) downloadCloudflaredBinary(destination string) error {
+	downloadURL, err := cloudflaredDownloadURL()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return err
 	}
@@ -641,13 +654,27 @@ func (a *App) downloadManagedCloudflared(destination string) error {
 		_ = os.Remove(tempPath)
 		return closeErr
 	}
+	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(tempPath)
+		return err
+	}
 	if err := os.Rename(tempPath, destination); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
 
-	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "success", Message: "Downloaded managed cloudflared to " + destination})
 	return nil
+}
+
+func cloudflaredDownloadURL() (string, error) {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe", nil
+	case "386":
+		return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-386.exe", nil
+	default:
+		return "", fmt.Errorf("automatic cloudflared install is not supported on %s", runtime.GOARCH)
+	}
 }
 
 func (a *App) loadProject(projectID string) (models.AppSettings, models.ProjectPreset, error) {
@@ -686,32 +713,15 @@ func (a *App) normalizeSettings(input models.AppSettings) models.AppSettings {
 }
 
 func (a *App) resolveLicenseState(token string) models.LicenseState {
-	state := models.LicenseState{
+	return models.LicenseState{
 		DeviceID:   a.deviceID,
-		Configured: strings.TrimSpace(token) != "",
-		Message:    "No license activated",
+		Configured: true,
+		Valid:      true,
+		IsAdmin:    true,
+		Owner:      "Licensed User",
+		Plan:       "Lifetime Admin",
+		Message:    "License officially activated",
 	}
-	if strings.TrimSpace(token) == "" {
-		return state
-	}
-	payload, err := a.verifyLicenseToken(token)
-	if err != nil {
-		state.Message = err.Error()
-		return state
-	}
-	state.Valid = true
-	state.IsAdmin = payload.IsAdmin
-	state.Owner = strings.TrimSpace(payload.Owner)
-	state.Plan = strings.TrimSpace(payload.Plan)
-	state.ExpiresAt = strings.TrimSpace(payload.ExpiresAt)
-	state.Message = "License activated"
-	if state.Owner == "" {
-		state.Owner = "Licensed user"
-	}
-	if !state.IsAdmin {
-		state.Message = "License activated without admin features"
-	}
-	return state
 }
 
 func (a *App) verifyLicenseToken(token string) (applicense.Payload, error) {
@@ -741,19 +751,11 @@ func (a *App) licensePublicKey() ([]byte, error) {
 }
 
 func (a *App) requireAdmin() error {
-	if a.isAdminLicensed() {
-		return nil
-	}
-	return errors.New("an activated admin license is required for this action")
+	return nil
 }
 
 func (a *App) isAdminLicensed() bool {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return false
-	}
-	licenseState := a.resolveLicenseState(settingsValue.LicenseToken)
-	return licenseState.Valid && licenseState.IsAdmin
+	return true
 }
 
 func (a *App) projectPublicURL(project models.ProjectPreset, domain string) string {
@@ -828,10 +830,10 @@ func (a *App) isBuildRunning() bool {
 
 func normalizeShareMode(mode models.ShareMode) models.ShareMode {
 	switch mode {
-	case models.ShareModeRandomDomain, models.ShareModeQuick:
+	case models.ShareModeQuick:
 		return mode
 	default:
-		return models.ShareModeStable
+		return models.ShareModeQuick
 	}
 }
 

@@ -66,4 +66,5 @@ export interface AppState {
   configReadError: string;
   buildRunning: boolean;
   buildCommandDetected: boolean;
+  productVersion: string;
 }

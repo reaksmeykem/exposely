@@ -5,14 +5,14 @@
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
-  "frontend:dev:serverUrl": "auto",
+  "frontend:dev:serverUrl": "http://127.0.0.1:5173",
   "author": {
     "name": "OpenAI Codex"
   },
   "info": {
     "companyName": "Cloudflare Tunnel Manager",
     "productName": "Cloudflare Tunnel Manager",
-    "productVersion": "1.0.3",
+    "productVersion": "1.0.7",
     "copyright": "Copyright 2026",
     "comments": "Manage your Cloudflare Tunnels easily"
   },

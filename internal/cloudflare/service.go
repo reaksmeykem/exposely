@@ -33,9 +33,11 @@ type Manager struct {
 	logSink    func(models.LogEntry)
 	statusSink func(models.TunnelStatus)
 
-	mu     sync.Mutex
-	status models.TunnelStatus
-	cmd    *exec.Cmd
+	mu         sync.Mutex
+	status     models.TunnelStatus
+	cmd        *exec.Cmd
+	stopPID    int
+	quickHomes map[int]string
 }
 
 func NewManager(configPath string, logSink func(models.LogEntry), statusSink func(models.TunnelStatus)) *Manager {
@@ -43,6 +45,7 @@ func NewManager(configPath string, logSink func(models.LogEntry), statusSink fun
 		configPath: configPath,
 		logSink:    logSink,
 		statusSink: statusSink,
+		quickHomes: map[int]string{},
 		status: models.TunnelStatus{
 			Mode:     "named",
 			LastLogs: []models.LogEntry{},
@@ -206,6 +209,7 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 	}
 
 	m.cmd = cmd
+	m.stopPID = 0
 	m.status.Running = true
 	m.status.Mode = "named"
 	m.status.PID = cmd.Process.Pid
@@ -278,6 +282,8 @@ func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader strin
 	}
 
 	m.cmd = cmd
+	m.stopPID = 0
+	m.quickHomes[cmd.Process.Pid] = tempHome
 	m.status.Running = true
 	m.status.Mode = "quick"
 	m.status.PID = cmd.Process.Pid
@@ -298,13 +304,23 @@ func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader strin
 func (m *Manager) StopTunnel() error {
 	m.mu.Lock()
 	cmd := m.cmd
+	if cmd != nil && cmd.Process != nil {
+		m.stopPID = cmd.Process.Pid
+	}
 	m.mu.Unlock()
 
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
 
-	if err := exec.Command("taskkill", "/PID", fmt.Sprint(cmd.Process.Pid), "/T", "/F").Run(); err != nil {
+	killCmd := exec.Command("taskkill", "/PID", fmt.Sprint(cmd.Process.Pid), "/T", "/F")
+	if runtime.GOOS == "windows" {
+		killCmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+	}
+	if err := killCmd.Run(); err != nil {
 		return err
 	}
 
@@ -352,10 +368,23 @@ func (m *Manager) waitForProcess(mode string, cmd *exec.Cmd) {
 	err := cmd.Wait()
 	message := "cloudflared exited"
 	level := "info"
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
 
 	m.mu.Lock()
+	expectedStop := m.stopPID != 0 && pid == m.stopPID
+	if expectedStop {
+		m.stopPID = 0
+	}
 	if m.cmd == cmd {
 		m.cmd = nil
+	}
+	quickHome := ""
+	if pid != 0 {
+		quickHome = m.quickHomes[pid]
+		delete(m.quickHomes, pid)
 	}
 	m.status.Running = false
 	m.status.PID = 0
@@ -363,14 +392,19 @@ func (m *Manager) waitForProcess(mode string, cmd *exec.Cmd) {
 		m.status.ActiveURL = ""
 		m.status.QuickURL = ""
 	}
-	if err != nil {
+	if err != nil && !expectedStop {
 		m.status.LastError = err.Error()
 		message = "cloudflared exited: " + err.Error()
 		level = "error"
+	} else if expectedStop {
+		message = "cloudflared stopped"
 	}
 	m.emitStatusLocked()
 	m.mu.Unlock()
 
+	if quickHome != "" {
+		_ = os.RemoveAll(quickHome)
+	}
 	m.pushLog("cloudflared", level, message)
 }
 

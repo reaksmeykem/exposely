@@ -30,6 +30,10 @@ export function EnsureCloudflared() {
   return window['go']['main']['App']['EnsureCloudflared']();
 }
 
+export function InstallCloudflared() {
+  return window['go']['main']['App']['InstallCloudflared']();
+}
+
 export function OpenConfigFile() {
   return window['go']['main']['App']['OpenConfigFile']();
 }

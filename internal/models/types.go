@@ -33,35 +33,7 @@ func DefaultSettings() AppSettings {
 		TunnelName:        "laravel-herd",
 		CloudflaredPath:   "",
 		DefaultServiceURL: "http://127.0.0.1:80",
-		Projects: []ProjectPreset{
-			{
-				ID:          "sample-hr-system",
-				DisplayName: "HR System",
-				LocalHost:   "hr-system.test",
-				Subdomain:   "app",
-				PublicURL:   "https://app.reaksmeykem.dev",
-				ProjectPath: "D:\\code\\hr-system",
-				ShareMode:   ShareModeStable,
-			},
-			{
-				ID:          "sample-crm",
-				DisplayName: "CRM",
-				LocalHost:   "crm.test",
-				Subdomain:   "crm",
-				PublicURL:   "https://crm.reaksmeykem.dev",
-				ProjectPath: "D:\\code\\crm",
-				ShareMode:   ShareModeStable,
-			},
-			{
-				ID:          "sample-blog",
-				DisplayName: "Blog",
-				LocalHost:   "blog.test",
-				Subdomain:   "",
-				PublicURL:   "",
-				ProjectPath: "D:\\code\\blog",
-				ShareMode:   ShareModeRandomDomain,
-			},
-		},
+		Projects:          []ProjectPreset{},
 	}
 }
 
@@ -101,6 +73,7 @@ type AppState struct {
 	ConfigReadError        string       `json:"configReadError"`
 	BuildRunning           bool         `json:"buildRunning"`
 	BuildCommandDetected   bool         `json:"buildCommandDetected"`
+	ProductVersion         string       `json:"productVersion"`
 }
 
 type LicenseState struct {

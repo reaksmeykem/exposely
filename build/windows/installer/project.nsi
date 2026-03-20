@@ -79,21 +79,28 @@ ShowInstDetails show # This will always show the installation details.
 Function .onInit
    !insertmacro wails.checkArchitecture
 
-   # Check if the application is already running
-   # We try to delete the file, if it fails, it's likely running
+   # Check if the installed application binary is locked by a running process.
+   # Skip this check entirely when the target executable does not exist yet.
    InitPluginsDir
+   IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 check_uninstall
    loop:
      ClearErrors
      FileOpen $0 "$INSTDIR\${PRODUCT_EXECUTABLE}" a
      IfErrors running not_running
 
    running:
-     MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${INFO_PRODUCTNAME} is already running. Please close it before installing the new version." /SD IDCANCEL IDRETRY loop
+     MessageBox MB_YESNOCANCEL|MB_ICONEXCLAMATION "${INFO_PRODUCTNAME} is already running.$\r$\n$\r$\nClick Yes to close it automatically, No to retry after closing it yourself, or Cancel to exit setup." /SD IDCANCEL IDYES terminate_running IDNO loop
      Quit
+
+   terminate_running:
+     ExecWait 'taskkill /F /IM "${PRODUCT_EXECUTABLE}" /T'
+     Sleep 1000
+     Goto loop
 
    not_running:
      FileClose $0
 
+   check_uninstall:
    # Automatically uninstall the previous version if it exists
    ReadRegStr $R0 HKLM "${UNINST_KEY}" "UninstallString"
    ${If} $R0 != ""
