@@ -15,7 +15,19 @@ export interface AppSettings {
   tunnelName: string;
   cloudflaredPath: string;
   defaultServiceURL: string;
+  licenseToken?: string;
   projects: ProjectPreset[];
+}
+
+export interface LicenseState {
+  valid: boolean;
+  isAdmin: boolean;
+  owner: string;
+  plan: string;
+  expiresAt: string;
+  deviceId: string;
+  message: string;
+  configured: boolean;
 }
 
 export interface LogEntry {
@@ -43,6 +55,7 @@ export interface TunnelStatus {
 export interface AppState {
   settings: AppSettings;
   status: TunnelStatus;
+  license: LicenseState;
   configPath: string;
   settingsPath: string;
   homeDir: string;

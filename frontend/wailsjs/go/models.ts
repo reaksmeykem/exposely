@@ -29,6 +29,7 @@ export namespace models {
 	    tunnelName: string;
 	    cloudflaredPath: string;
 	    defaultServiceURL: string;
+	    licenseToken?: string;
 	    projects: ProjectPreset[];
 	
 	    static createFrom(source: any = {}) {
@@ -41,6 +42,7 @@ export namespace models {
 	        this.tunnelName = source["tunnelName"];
 	        this.cloudflaredPath = source["cloudflaredPath"];
 	        this.defaultServiceURL = source["defaultServiceURL"];
+	        this.licenseToken = source["licenseToken"];
 	        this.projects = this.convertValues(source["projects"], ProjectPreset);
 	    }
 	
@@ -61,6 +63,32 @@ export namespace models {
 		    }
 		    return a;
 		}
+	}
+	export class LicenseState {
+	    valid: boolean;
+	    isAdmin: boolean;
+	    owner: string;
+	    plan: string;
+	    expiresAt: string;
+	    deviceId: string;
+	    message: string;
+	    configured: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LicenseState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.valid = source["valid"];
+	        this.isAdmin = source["isAdmin"];
+	        this.owner = source["owner"];
+	        this.plan = source["plan"];
+	        this.expiresAt = source["expiresAt"];
+	        this.deviceId = source["deviceId"];
+	        this.message = source["message"];
+	        this.configured = source["configured"];
+	    }
 	}
 	export class LogEntry {
 	    timestamp: string;
@@ -135,6 +163,7 @@ export namespace models {
 	export class AppState {
 	    settings: AppSettings;
 	    status: TunnelStatus;
+	    license: LicenseState;
 	    configPath: string;
 	    settingsPath: string;
 	    homeDir: string;
@@ -154,6 +183,7 @@ export namespace models {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.settings = this.convertValues(source["settings"], AppSettings);
 	        this.status = this.convertValues(source["status"], TunnelStatus);
+	        this.license = this.convertValues(source["license"], LicenseState);
 	        this.configPath = source["configPath"];
 	        this.settingsPath = source["settingsPath"];
 	        this.homeDir = source["homeDir"];
@@ -184,6 +214,7 @@ export namespace models {
 		    return a;
 		}
 	}
+	
 	
 	
 

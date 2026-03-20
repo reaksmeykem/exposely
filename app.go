@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -15,14 +16,18 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"cloudflaretunnelmanager/internal/cloudflare"
+	applicense "cloudflaretunnelmanager/internal/license"
 	"cloudflaretunnelmanager/internal/models"
 	"cloudflaretunnelmanager/internal/settings"
 )
+
+const embeddedLicensePublicKey = "+5UW75dqz3E/OdHtaoaI/UBF7yfs9XoC3btogzS02kE="
 
 type App struct {
 	ctx         context.Context
@@ -31,6 +36,7 @@ type App struct {
 	configPath  string
 	homeDir     string
 	appDataDir  string
+	deviceID    string
 	buildMu     sync.Mutex
 	buildCmd    *exec.Cmd
 	lastStateMu sync.Mutex
@@ -52,6 +58,7 @@ func NewApp() (*App, error) {
 		configPath: filepath.Join(homeDir, ".cloudflared", "config.yml"),
 		homeDir:    homeDir,
 		appDataDir: filepath.Dir(store.Path()),
+		deviceID:   resolveDeviceID(),
 	}
 	app.manager = cloudflare.NewManager(app.configPath, app.pushLog, app.pushStatus)
 	return app, nil
@@ -89,6 +96,7 @@ func (a *App) RefreshState() (models.AppState, error) {
 	}
 
 	status := a.manager.Status()
+	licenseState := a.resolveLicenseState(settingsValue.LicenseToken)
 	status.TunnelName = settingsValue.TunnelName
 	status.ConfigPath = a.configPath
 	if detectErr == nil {
@@ -110,6 +118,7 @@ func (a *App) RefreshState() (models.AppState, error) {
 	return models.AppState{
 		Settings:               settingsValue,
 		Status:                 status,
+		License:                licenseState,
 		ConfigPath:             a.configPath,
 		SettingsPath:           a.store.Path(),
 		HomeDir:                a.homeDir,
@@ -124,6 +133,9 @@ func (a *App) RefreshState() (models.AppState, error) {
 }
 
 func (a *App) SaveSettings(input models.AppSettings) (models.AppState, error) {
+	if err := a.requireAdmin(); err != nil {
+		return models.AppState{}, err
+	}
 	settingsValue := a.normalizeSettings(input)
 	if err := a.store.Save(settingsValue); err != nil {
 		return models.AppState{}, err
@@ -132,6 +144,7 @@ func (a *App) SaveSettings(input models.AppSettings) (models.AppState, error) {
 }
 
 func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
+	isAdmin := a.isAdminLicensed()
 	settingsValue, err := a.store.Load()
 	if err != nil {
 		return models.AppState{}, err
@@ -153,6 +166,9 @@ func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
 	input.ProjectPath = strings.TrimSpace(input.ProjectPath)
 	input.Subdomain = strings.TrimSpace(strings.ToLower(input.Subdomain))
 	input.ShareMode = normalizeShareMode(input.ShareMode)
+	if !isAdmin && input.ShareMode != models.ShareModeQuick {
+		return models.AppState{}, errors.New("an admin license is required for named tunnel sharing")
+	}
 	input.PublicURL = a.projectPublicURL(input, settingsValue.DefaultDomain)
 
 	replaced := false
@@ -193,6 +209,9 @@ func (a *App) DeleteProject(id string) (models.AppState, error) {
 }
 
 func (a *App) ShareProject(projectID string) (models.AppState, error) {
+	if err := a.requireAdmin(); err != nil {
+		return models.AppState{}, err
+	}
 	settingsValue, project, err := a.loadProject(projectID)
 	if err != nil {
 		return models.AppState{}, err
@@ -209,6 +228,9 @@ func (a *App) ShareProject(projectID string) (models.AppState, error) {
 }
 
 func (a *App) ShareProjectWithRandomURL(projectID string) (models.AppState, error) {
+	if err := a.requireAdmin(); err != nil {
+		return models.AppState{}, err
+	}
 	settingsValue, project, err := a.loadProject(projectID)
 	if err != nil {
 		return models.AppState{}, err
@@ -244,6 +266,9 @@ func (a *App) EnsureCloudflared() (models.AppState, error) {
 }
 
 func (a *App) StartTunnel() (models.AppState, error) {
+	if err := a.requireAdmin(); err != nil {
+		return models.AppState{}, err
+	}
 	settingsValue, err := a.store.Load()
 	if err != nil {
 		return models.AppState{}, err
@@ -275,6 +300,9 @@ func (a *App) StopTunnel() (models.AppState, error) {
 }
 
 func (a *App) CreateTunnel() (models.AppState, error) {
+	if err := a.requireAdmin(); err != nil {
+		return models.AppState{}, err
+	}
 	settingsValue, err := a.store.Load()
 	if err != nil {
 		return models.AppState{}, err
@@ -323,6 +351,12 @@ func (a *App) RunNpmBuild(projectID string) error {
 	}
 
 	cmd := exec.Command(command, "run", "build")
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+	}
 	cmd.Dir = project.ProjectPath
 	cmd.Env = os.Environ()
 
@@ -376,6 +410,9 @@ func (a *App) OpenPublicURL(projectID string) error {
 }
 
 func (a *App) OpenConfigFile() error {
+	if err := a.requireAdmin(); err != nil {
+		return err
+	}
 	if _, err := os.Stat(a.configPath); err != nil {
 		return err
 	}
@@ -383,7 +420,39 @@ func (a *App) OpenConfigFile() error {
 }
 
 func (a *App) OpenSettingsFile() error {
+	if err := a.requireAdmin(); err != nil {
+		return err
+	}
 	return openExternal(a.store.Path())
+}
+
+func (a *App) ActivateLicense(token string) (models.AppState, error) {
+	if _, err := a.verifyLicenseToken(token); err != nil {
+		return models.AppState{}, err
+	}
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	settingsValue = a.normalizeSettings(settingsValue)
+	settingsValue.LicenseToken = strings.TrimSpace(token)
+	if err := a.store.Save(settingsValue); err != nil {
+		return models.AppState{}, err
+	}
+	return a.RefreshState()
+}
+
+func (a *App) ClearLicense() (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	settingsValue = a.normalizeSettings(settingsValue)
+	settingsValue.LicenseToken = ""
+	if err := a.store.Save(settingsValue); err != nil {
+		return models.AppState{}, err
+	}
+	return a.RefreshState()
 }
 
 func (a *App) BrowseProjectFolder(currentPath string) (string, error) {
@@ -614,6 +683,77 @@ func (a *App) normalizeSettings(input models.AppSettings) models.AppSettings {
 	return output
 }
 
+func (a *App) resolveLicenseState(token string) models.LicenseState {
+	state := models.LicenseState{
+		DeviceID:   a.deviceID,
+		Configured: strings.TrimSpace(token) != "",
+		Message:    "No license activated",
+	}
+	if strings.TrimSpace(token) == "" {
+		return state
+	}
+	payload, err := a.verifyLicenseToken(token)
+	if err != nil {
+		state.Message = err.Error()
+		return state
+	}
+	state.Valid = true
+	state.IsAdmin = payload.IsAdmin
+	state.Owner = strings.TrimSpace(payload.Owner)
+	state.Plan = strings.TrimSpace(payload.Plan)
+	state.ExpiresAt = strings.TrimSpace(payload.ExpiresAt)
+	state.Message = "License activated"
+	if state.Owner == "" {
+		state.Owner = "Licensed user"
+	}
+	if !state.IsAdmin {
+		state.Message = "License activated without admin features"
+	}
+	return state
+}
+
+func (a *App) verifyLicenseToken(token string) (applicense.Payload, error) {
+	publicKey, err := a.licensePublicKey()
+	if err != nil {
+		return applicense.Payload{}, err
+	}
+	return applicense.VerifyToken(token, publicKey, a.deviceID, time.Now())
+}
+
+func (a *App) licensePublicKey() ([]byte, error) {
+	keyText := strings.TrimSpace(os.Getenv("CLOUDFLARE_TUNNEL_LICENSE_PUBLIC_KEY"))
+	if keyText == "" {
+		keyText = strings.TrimSpace(embeddedLicensePublicKey)
+	}
+	if keyText == "" {
+		return nil, errors.New("license public key is not configured")
+	}
+	publicKey, err := base64.StdEncoding.DecodeString(keyText)
+	if err != nil {
+		publicKey, err = base64.RawStdEncoding.DecodeString(keyText)
+	}
+	if err != nil {
+		return nil, errors.New("license public key format is invalid")
+	}
+	return publicKey, nil
+}
+
+func (a *App) requireAdmin() error {
+	if a.isAdminLicensed() {
+		return nil
+	}
+	return errors.New("an activated admin license is required for this action")
+}
+
+func (a *App) isAdminLicensed() bool {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return false
+	}
+	licenseState := a.resolveLicenseState(settingsValue.LicenseToken)
+	return licenseState.Valid && licenseState.IsAdmin
+}
+
 func (a *App) projectPublicURL(project models.ProjectPreset, domain string) string {
 	switch normalizeShareMode(project.ShareMode) {
 	case models.ShareModeQuick:
@@ -714,9 +854,23 @@ func randomSubdomain() string {
 
 func openExternal(target string) error {
 	if _, err := url.Parse(target); err == nil && strings.HasPrefix(strings.ToLower(target), "http") {
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target).Start()
+		cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+		if runtime.GOOS == "windows" {
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				HideWindow:    true,
+				CreationFlags: 0x08000000,
+			}
+		}
+		return cmd.Start()
 	}
-	return exec.Command("rundll32", "url.dll,FileProtocolHandler", filepath.Clean(target)).Start()
+	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", filepath.Clean(target))
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+	}
+	return cmd.Start()
 }
 
 func errorString(err error) string {
@@ -724,6 +878,18 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func resolveDeviceID() string {
+	hostname, _ := os.Hostname()
+	username := strings.TrimSpace(os.Getenv("USERNAME"))
+	deviceID := strings.TrimSpace(strings.Join([]string{hostname, username}, "-"))
+	deviceID = strings.ToLower(strings.ReplaceAll(deviceID, " ", "-"))
+	deviceID = strings.Trim(deviceID, "-")
+	if deviceID == "" {
+		return "unknown-device"
+	}
+	return deviceID
 }
 
 func nowStamp() string {

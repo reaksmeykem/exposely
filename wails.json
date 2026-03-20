@@ -9,5 +9,12 @@
   "author": {
     "name": "OpenAI Codex"
   },
+  "info": {
+    "companyName": "Cloudflare Tunnel Manager",
+    "productName": "Cloudflare Tunnel Manager",
+    "productVersion": "1.0.3",
+    "copyright": "Copyright 2026",
+    "comments": "Manage your Cloudflare Tunnels easily"
+  },
   "assetdir": "frontend/dist"
 }

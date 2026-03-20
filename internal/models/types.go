@@ -23,6 +23,7 @@ type AppSettings struct {
 	TunnelName        string          `json:"tunnelName"`
 	CloudflaredPath   string          `json:"cloudflaredPath"`
 	DefaultServiceURL string          `json:"defaultServiceURL"`
+	LicenseToken      string          `json:"licenseToken,omitempty"`
 	Projects          []ProjectPreset `json:"projects"`
 }
 
@@ -89,6 +90,7 @@ type TunnelStatus struct {
 type AppState struct {
 	Settings               AppSettings  `json:"settings"`
 	Status                 TunnelStatus `json:"status"`
+	License                LicenseState `json:"license"`
 	ConfigPath             string       `json:"configPath"`
 	SettingsPath           string       `json:"settingsPath"`
 	HomeDir                string       `json:"homeDir"`
@@ -99,4 +101,15 @@ type AppState struct {
 	ConfigReadError        string       `json:"configReadError"`
 	BuildRunning           bool         `json:"buildRunning"`
 	BuildCommandDetected   bool         `json:"buildCommandDetected"`
+}
+
+type LicenseState struct {
+	Valid      bool   `json:"valid"`
+	IsAdmin    bool   `json:"isAdmin"`
+	Owner      string `json:"owner"`
+	Plan       string `json:"plan"`
+	ExpiresAt  string `json:"expiresAt"`
+	DeviceID   string `json:"deviceId"`
+	Message    string `json:"message"`
+	Configured bool   `json:"configured"`
 }

@@ -15,6 +15,7 @@ interface UIState {
   selectedProjectId: string | null;
   activeProjectId: string | null;
   projectUrls: Record<string, string>;
+  copiedProjectId: string | null;
   activeTab: 'overview' | 'settings' | 'logs' | 'setup';
   projectMenuOpen: boolean;
   editorOpen: boolean;
@@ -22,6 +23,7 @@ interface UIState {
   editorProject: ProjectPreset;
   notice: Notice | null;
   busy: string | null;
+  licenseDraft: string;
 }
 
 const blankProject = (): ProjectPreset => ({
@@ -39,6 +41,7 @@ const state: UIState = {
   selectedProjectId: null,
   activeProjectId: null,
   projectUrls: {},
+  copiedProjectId: null,
   activeTab: 'overview',
   projectMenuOpen: false,
   editorOpen: false,
@@ -46,6 +49,7 @@ const state: UIState = {
   editorProject: blankProject(),
   notice: null,
   busy: null,
+  licenseDraft: '',
 };
 
 const rootElement = document.querySelector<HTMLDivElement>('#app');
@@ -58,6 +62,7 @@ const COMPACT_WINDOW_HEIGHT = 700;
 const COMPACT_WINDOW_MIN_WIDTH = 900;
 const COMPACT_WINDOW_MIN_HEIGHT = 620;
 let noticeTimer: number | null = null;
+let copyLabelTimer: number | null = null;
 
 function escapeHtml(value: string): string {
   return value
@@ -104,10 +109,22 @@ function selectedProject(): ProjectPreset | null {
 
 function syncProjectUrlsFromState(appState: AppState) {
   for (const project of appState.settings.projects) {
-    if (project.publicURL?.trim()) {
+    if (project.shareMode !== 'quick' && project.publicURL?.trim()) {
       state.projectUrls[project.id] = project.publicURL.trim();
     }
   }
+}
+
+function inferActiveProjectId(appState: AppState): string | null {
+  const liveUrl = (appState.status.activeUrl || appState.status.quickUrl || '').trim();
+  if (!appState.status.running) return null;
+
+  if (liveUrl) {
+    const matchedProject = appState.settings.projects.find((project) => project.publicURL?.trim() === liveUrl);
+    if (matchedProject) return matchedProject.id;
+  }
+
+  return state.selectedProjectId || appState.settings.projects[0]?.id || null;
 }
 
 function setNotice(tone: NoticeTone, message: string) {
@@ -199,16 +216,30 @@ function render() {
   const project = selectedProject();
   state.selectedProjectId = project?.id ?? null;
   const tunnelStatus = appState.status;
-  const storedProjectUrl = project ? (state.projectUrls[project.id] || project.publicURL || '') : '';
+  const storedProjectUrl = project
+    ? (project.shareMode === 'quick' ? '' : (state.projectUrls[project.id] || project.publicURL || ''))
+    : '';
   const liveProjectUrl = state.activeProjectId === project?.id ? (tunnelStatus.activeUrl || tunnelStatus.quickUrl || '') : '';
   const activeUrl = liveProjectUrl || storedProjectUrl;
   const projectUrl = project ? formatProjectURL(project, appState.settings.defaultDomain) : '';
   const hasProjects = appState.settings.projects.length > 0;
   const shareToolReady = appState.cloudflaredDetected;
   const canSetupTunnel = shareToolReady;
+  const hasAdminLicense = appState.license.valid && appState.license.isAdmin;
   const canStartTunnel = shareToolReady && hasProjects;
+  const shareToolStatusLabel = shareToolReady ? 'Installed' : 'Not installed';
+  const shareToolStatusBadgeClass = shareToolReady ? 'pill-success' : 'pill-outline';
+  const shareToolStatusMessage = shareToolReady
+    ? 'cloudflared is installed and ready for sharing.'
+    : 'cloudflared is not installed yet. Click Install Share Tool first.';
+  const setupTunnelStatusLabel = canSetupTunnel ? 'Available' : 'Install required';
+  const setupTunnelStatusBadgeClass = canSetupTunnel ? 'pill-success' : 'pill-outline';
+  const setupTunnelStatusMessage = canSetupTunnel
+    ? 'Create or reuse a named tunnel.'
+    : 'Install the Share Tool first before setting up a named tunnel.';
+  const installBannerPath = appState.cloudflaredPath || appState.managedCloudflaredPath;
   const headerHint = !shareToolReady
-    ? 'Prepare Share Tool first'
+    ? ''
     : !hasProjects
       ? 'Create a project first'
       : '';
@@ -224,7 +255,10 @@ function render() {
             </svg>
             <div>
               <h1>Cloudflare Tunnel</h1>
-              <p>Manager</p>
+              <div class="status-indicator tone-${statusTone(tunnelStatus)}">
+                <span class="status-dot"></span>
+                <span>${escapeHtml(tunnelStatus.running ? 'Running' : 'Stopped')}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -237,13 +271,15 @@ function render() {
             </svg>
             <span>Overview</span>
           </button>
-          <button type="button" class="nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="tab-settings">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="2"/>
-              <path d="M10 2V4M10 16V18M18 10H16M4 10H2M15.66 4.34L14.24 5.76M5.76 14.24L4.34 15.66M15.66 15.66L14.24 14.24M5.76 5.76L4.34 4.34" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            </svg>
-            <span>Settings</span>
-          </button>
+          ${hasAdminLicense ? `
+            <button type="button" class="nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="tab-settings">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="2"/>
+                <path d="M10 2V4M10 16V18M18 10H16M4 10H2M15.66 4.34L14.24 5.76M5.76 14.24L4.34 15.66M15.66 15.66L14.24 14.24M5.76 5.76L4.34 4.34" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <span>Settings</span>
+            </button>
+          ` : ''}
           <button type="button" class="nav-item ${state.activeTab === 'setup' ? 'active' : ''}" data-action="tab-setup">
             <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M10 3L16 6.5V13.5L10 17L4 13.5V6.5L10 3Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
@@ -251,12 +287,6 @@ function render() {
               <circle cx="10" cy="13" r="1" fill="currentColor"/>
             </svg>
             <span>Setup</span>
-          </button>
-          <button type="button" class="nav-item ${state.activeTab === 'logs' ? 'active' : ''}" data-action="tab-logs">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3 5H17M3 10H17M3 15H17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            </svg>
-            <span>Logs</span>
           </button>
         </nav>
 
@@ -276,14 +306,27 @@ function render() {
         </div>
 
         <div class="sidebar-footer">
-          <div class="status-indicator tone-${statusTone(tunnelStatus)}">
-            <span class="status-dot"></span>
-            <span>${escapeHtml(tunnelStatus.running ? 'Running' : 'Stopped')}</span>
+          <div class="nav-item ${state.activeTab === 'logs' ? 'active' : ''} logs-nav-item" data-action="tab-logs">
+            <span>Logs</span>
           </div>
         </div>
       </aside>
 
       <section class="main-content">
+        ${!shareToolReady ? `
+          <section class="install-banner" data-action="tab-setup">
+            <div class="install-banner-copy">
+              <span class="install-banner-label">Required setup</span>
+              <strong>Install Share Tool first</strong>
+              <p>cloudflared is not installed yet. Install it before starting a tunnel or sharing a project.</p>
+              <span class="install-banner-path">Install path: ${escapeHtml(installBannerPath)}</span>
+            </div>
+            <div class="install-banner-action">
+              <button type="button" class="danger-button" data-action="tab-setup">Open Setup</button>
+            </div>
+          </section>
+        ` : ''}
+
         <header class="content-header">
           <div class="header-info">
             <h2>${state.activeTab === 'overview' ? 'Overview' : state.activeTab === 'settings' ? 'Settings' : state.activeTab === 'setup' ? 'Setup' : 'Logs'}</h2>
@@ -324,13 +367,13 @@ function render() {
                   <label>
                     Share mode
                     <select name="shareMode">
-                      <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>One-click public URL</option>
-                      <option value="stable" ${state.editorProject.shareMode === 'stable' ? 'selected' : ''}>Stable hostname</option>
-                      <option value="random-domain" ${state.editorProject.shareMode === 'random-domain' ? 'selected' : ''}>Random under my domain</option>
+                      <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>One-click public URL (No Cloudflare Login Required)</option>
+                      ${hasAdminLicense ? `<option value="stable" ${state.editorProject.shareMode === 'stable' ? 'selected' : ''}>Stable hostname (Admin License Required)</option>` : ''}
+                      ${hasAdminLicense ? `<option value="random-domain" ${state.editorProject.shareMode === 'random-domain' ? 'selected' : ''}>Random under my domain (Admin License Required)</option>` : ''}
                     </select>
                   </label>
                   ${
-                    state.editorProject.shareMode === 'stable'
+                     hasAdminLicense && state.editorProject.shareMode === 'stable'
                       ? `
                         <label>
                           Stable subdomain
@@ -339,6 +382,29 @@ function render() {
                             <button type="button" class="secondary browse-button" data-action="random-subdomain">Random</button>
                           </div>
                         </label>
+                      `
+                      : ''
+                  }
+                   ${
+                     !hasAdminLicense
+                       ? `
+                         <div class="field-hint hint-success">
+                           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                             <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+                             <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                           </svg>
+                           <span>Activate an admin license to unlock stable and random-domain sharing.</span>
+                         </div>
+                       `
+                       : state.editorProject.shareMode === 'quick'
+                       ? `
+                         <div class="field-hint hint-success">
+                           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+                            <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                          <span>This mode works without a Cloudflare login.</span>
+                        </div>
                       `
                       : ''
                   }
@@ -398,7 +464,8 @@ function render() {
                             <strong>${escapeHtml(project.localHost)}</strong>
                             <div class="inline-url-row">
                               <p>${escapeHtml(activeUrl || projectUrl || 'No public URL is available yet')}</p>
-                              ${(activeUrl || projectUrl) ? `<button type="button" class="secondary inline-copy-button" data-action="copy-url" aria-label="Copy public URL">Copy</button>` : ''}
+                              ${(activeUrl || projectUrl) ? `<button type="button" class="secondary inline-copy-button" data-action="open-url" aria-label="Open public URL">Open</button>` : ''}
+                              ${!(activeUrl || projectUrl) ? `<button type="button" class="secondary inline-copy-button" data-action="regenerate-url" aria-label="Generate public URL">Refresh URL</button>` : ''}
                             </div>
                           </div>
                         </div>
@@ -408,8 +475,8 @@ function render() {
                   }
                 </article>
               `
-              : state.activeTab === 'settings'
-                ? `
+                 : state.activeTab === 'settings' && hasAdminLicense
+                 ? `
                   <article class="panel compact-panel">
                     <div class="panel-header">
                       <div>
@@ -418,11 +485,8 @@ function render() {
                       </div>
                     </div>
                     <form id="settings-form" class="form-grid">
-                      <label>Default domain<input name="defaultDomain" value="${escapeHtml(appState.settings.defaultDomain)}" /></label>
-                      <label>Tunnel name<input name="tunnelName" value="${escapeHtml(appState.settings.tunnelName)}" /></label>
-                      <label>Cloudflared path<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="Leave blank to use PATH" /></label>
+                      <label>Custom cloudflared path (optional)<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="Leave blank to use default" /></label>
                       <label>Local service URL<input name="defaultServiceURL" value="${escapeHtml(appState.settings.defaultServiceURL)}" /></label>
-                      <label>Managed cloudflared location<input value="${escapeHtml(appState.managedCloudflaredPath)}" disabled /></label>
                       <div class="action-row wide"><button type="submit">Save Settings</button></div>
                     </form>
                   </article>
@@ -451,9 +515,37 @@ function render() {
                     </div>
                     ${tunnelStatus.lastError ? `<p class="error-copy">${escapeHtml(tunnelStatus.lastError)}</p>` : ''}
                   </article>
-                `
-                : state.activeTab === 'setup'
-                  ? `
+                 `
+                 : state.activeTab === 'setup'
+                   ? `
+                    <article class="panel compact-panel">
+                      <div class="panel-header">
+                        <div>
+                          <p class="eyebrow">License</p>
+                          <h2>Offline activation</h2>
+                        </div>
+                        <span class="pill ${appState.license.valid ? 'pill-success' : 'pill-outline'}">${escapeHtml(appState.license.valid ? 'active' : 'inactive')}</span>
+                      </div>
+                      <div class="status-grid two-column">
+                        <div><label>Device ID</label><strong>${escapeHtml(appState.license.deviceId || 'not detected')}</strong></div>
+                        <div><label>Status</label><strong>${escapeHtml(appState.license.message || 'No license activated')}</strong></div>
+                        <div><label>Owner</label><strong>${escapeHtml(appState.license.owner || '—')}</strong></div>
+                        <div><label>Plan</label><strong>${escapeHtml(appState.license.plan || '—')}</strong></div>
+                        <div><label>Expires at</label><strong>${escapeHtml(appState.license.expiresAt || 'never')}</strong></div>
+                        <div><label>Admin features</label><strong>${escapeHtml(appState.license.isAdmin ? 'enabled' : 'disabled')}</strong></div>
+                      </div>
+                      <form id="license-form" class="form-grid">
+                        <label>
+                          Signed activation token
+                          <textarea name="licenseToken" rows="5" placeholder="Paste signed offline activation token here">${escapeHtml(state.licenseDraft)}</textarea>
+                        </label>
+                        <div class="action-row wide license-actions">
+                          <button type="submit">Activate License</button>
+                          ${appState.license.configured ? '<button type="button" class="secondary" data-action="clear-license">Remove License</button>' : ''}
+                        </div>
+                      </form>
+                    </article>
+
                     <article class="panel compact-panel">
                       <div class="panel-header">
                         <div>
@@ -462,20 +554,24 @@ function render() {
                         </div>
                       </div>
                       <div class="metric-grid">
-                        <div class="metric-card">
-                          <span class="summary-label">Prepare share tool</span>
-                          <strong>${escapeHtml(appState.cloudflaredDetected ? 'Ready' : 'Required')}</strong>
-                          <p>Prepare cloudflared before starting or sharing projects.</p>
+                        <div class="metric-card metric-card-split">
+                          <div class="metric-card-copy">
+                            <span class="summary-label">Share Tool</span>
+                            <strong>${escapeHtml(shareToolStatusLabel)} <span class="pill ${shareToolStatusBadgeClass}">${escapeHtml(shareToolStatusLabel)}</span></strong>
+                            <p>${escapeHtml(shareToolStatusMessage)}</p>
+                          </div>
                           <div class="action-row">
-                            <button type="button" class="${shareToolReady ? 'secondary' : ''}" data-action="ensure-cloudflared">Prepare Share Tool</button>
+                            <button type="button" class="${shareToolReady ? 'secondary' : ''}" data-action="ensure-cloudflared">${shareToolReady ? 'Reinstall Share Tool' : 'Install Share Tool'}</button>
                           </div>
                         </div>
-                        <div class="metric-card">
-                          <span class="summary-label">Setup tunnel</span>
-                          <strong>${escapeHtml(canSetupTunnel ? 'Available' : 'Waiting')}</strong>
-                          <p>Create or reuse the named tunnel after the share tool is ready.</p>
+                        <div class="metric-card metric-card-split">
+                          <div class="metric-card-copy">
+                            <span class="summary-label">Setup tunnel</span>
+                            <strong>${escapeHtml(setupTunnelStatusLabel)} <span class="pill ${setupTunnelStatusBadgeClass}">${escapeHtml(setupTunnelStatusLabel)}</span></strong>
+                            <p>${escapeHtml(hasAdminLicense ? setupTunnelStatusMessage : 'Activate an admin license to unlock named tunnel setup and advanced settings.')}</p>
+                          </div>
                           <div class="action-row">
-                            <button type="button" class="secondary" data-action="create-tunnel" ${!canSetupTunnel ? 'disabled' : ''}>Setup Tunnel</button>
+                            <button type="button" class="secondary" data-action="create-tunnel" ${!canSetupTunnel || !hasAdminLicense ? 'disabled' : ''}>Setup Tunnel</button>
                           </div>
                         </div>
                       </div>
@@ -552,13 +648,27 @@ async function confirmProjectSwitch(nextProjectID: string): Promise<boolean> {
 }
 
 function bindForms() {
+  const licenseForm = root.querySelector<HTMLFormElement>('#license-form');
+  licenseForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const token = formValue(licenseForm, 'licenseToken');
+    state.licenseDraft = token;
+    const next = await withAction('Activating license...', () => api.activateLicense(token));
+    if (next) {
+      state.appState = next;
+      state.licenseDraft = '';
+      if (next.license.isAdmin && state.activeTab !== 'settings') {
+        state.activeTab = 'settings';
+      }
+      setNotice('success', next.license.message || 'License activated');
+    }
+  });
+
   const settingsForm = root.querySelector<HTMLFormElement>('#settings-form');
   settingsForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const payload = {
       ...state.appState!.settings,
-      defaultDomain: formValue(settingsForm, 'defaultDomain'),
-      tunnelName: formValue(settingsForm, 'tunnelName'),
       cloudflaredPath: formValue(settingsForm, 'cloudflaredPath'),
       defaultServiceURL: formValue(settingsForm, 'defaultServiceURL'),
     };
@@ -649,6 +759,12 @@ async function handleAction(action: string, id: string | null) {
       render();
       return;
     case 'tab-settings':
+      if (!state.appState?.license.isAdmin) {
+        state.activeTab = 'setup';
+        state.projectMenuOpen = false;
+        setNotice('error', 'Activate an admin license to open Settings');
+        return;
+      }
       state.activeTab = 'settings';
       state.projectMenuOpen = false;
       render();
@@ -691,6 +807,18 @@ async function handleAction(action: string, id: string | null) {
       state.editorOpen = false;
       render();
       return;
+    case 'clear-license': {
+      const next = await withAction('Removing license...', () => api.clearLicense());
+      if (next) {
+        state.appState = next;
+        state.licenseDraft = '';
+        if (state.activeTab === 'settings') {
+          state.activeTab = 'setup';
+        }
+        setNotice('success', 'License removed');
+      }
+      return;
+    }
     case 'browse-project-folder': {
       syncEditorFromForm();
       const result = await withAction('Opening folder picker...', () => api.browseProjectFolder(state.editorProject.projectPath));
@@ -720,6 +848,16 @@ async function handleAction(action: string, id: string | null) {
         return;
       }
       await navigator.clipboard.writeText(url);
+      state.copiedProjectId = project.id;
+      if (copyLabelTimer !== null) {
+        window.clearTimeout(copyLabelTimer);
+      }
+      copyLabelTimer = window.setTimeout(() => {
+        state.copiedProjectId = null;
+        copyLabelTimer = null;
+        render();
+      }, 1800);
+      render();
       return;
     }
   }
@@ -762,17 +900,31 @@ async function handleAction(action: string, id: string | null) {
       return;
     }
     case 'ensure-cloudflared': {
-      const next = await withAction('Preparing cloudflared...', () => api.ensureCloudflared());
+      const next = await withAction('Installing share tool...', () => api.ensureCloudflared());
       if (next) {
         state.appState = next;
-        setNotice('success', 'cloudflared is ready for one-click sharing');
+        setNotice('success', 'Share tool installed. You can now set up the tunnel.');
       }
       return;
     }
     case 'stop-tunnel': {
       const next = await withAction('Stopping tunnel...', () => api.stopTunnel());
       if (next) {
+        const activeProject = state.appState?.settings.projects.find((project) => project.id === state.activeProjectId);
         state.appState = next;
+        if (activeProject?.shareMode === 'quick') {
+          delete state.projectUrls[activeProject.id];
+          const clearedProject: ProjectPreset = {
+            ...activeProject,
+            publicURL: '',
+          };
+          void api.saveProject(clearedProject).then((nextState) => {
+            state.appState = nextState;
+            render();
+          }).catch(() => {
+            // Ignore cleanup persistence failures for quick URLs.
+          });
+        }
         state.activeProjectId = null;
         setNotice('success', 'Tunnel stopped');
       }
@@ -796,6 +948,9 @@ async function handleAction(action: string, id: string | null) {
       const next = await withAction('Refreshing state...', () => api.refreshState());
       if (next) {
         state.appState = next;
+        if (!state.activeProjectId && next.status.running) {
+          state.activeProjectId = inferActiveProjectId(next);
+        }
         setNotice('success', 'State refreshed');
       }
       return;
@@ -954,7 +1109,7 @@ async function bootstrap() {
   state.appState = next;
   syncProjectUrlsFromState(next);
   state.selectedProjectId = next.settings.projects[0]?.id ?? null;
-  state.activeProjectId = null;
+  state.activeProjectId = inferActiveProjectId(next);
   render();
 
   window.runtime?.EventsOn('log', (payload) => {
@@ -968,6 +1123,9 @@ async function bootstrap() {
     if (!state.appState) return;
     const status = payload as TunnelStatus;
     state.appState.status = status;
+    if (!state.activeProjectId && status.running) {
+      state.activeProjectId = inferActiveProjectId(state.appState);
+    }
     if (state.activeProjectId && (status.activeUrl || status.quickUrl)) {
       const nextUrl = status.activeUrl || status.quickUrl;
       const currentUrl = state.projectUrls[state.activeProjectId];
@@ -975,7 +1133,7 @@ async function bootstrap() {
 
       if (nextUrl && nextUrl !== currentUrl) {
         const activeProject = state.appState.settings.projects.find((project) => project.id === state.activeProjectId);
-        if (activeProject && activeProject.publicURL !== nextUrl) {
+        if (activeProject && activeProject.shareMode !== 'quick' && activeProject.publicURL !== nextUrl) {
           const updatedProject: ProjectPreset = {
             ...activeProject,
             publicURL: nextUrl,

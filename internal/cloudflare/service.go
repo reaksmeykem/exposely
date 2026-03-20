@@ -11,8 +11,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"cloudflaretunnelmanager/internal/models"
@@ -181,6 +183,12 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 
 	args := []string{"tunnel", "--config", configPath, "--loglevel", "info", "run", reference}
 	cmd := exec.Command(cloudflaredPath, args...)
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		m.mu.Unlock()
@@ -240,6 +248,12 @@ func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader strin
 		args = append(args, "--http-host-header", hostHeader)
 	}
 	cmd := exec.Command(cloudflaredPath, args...)
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+	}
 	cmd.Env = append(os.Environ(),
 		"HOME="+tempHome,
 		"USERPROFILE="+tempHome,
@@ -392,6 +406,12 @@ func (m *Manager) emitStatusLocked() {
 
 func runCapture(executable string, args ...string) (string, string, error) {
 	cmd := exec.Command(executable, args...)
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
