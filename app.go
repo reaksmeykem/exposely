@@ -27,7 +27,7 @@ import (
 	"cloudflaretunnelmanager/internal/settings"
 )
 
-const embeddedLicensePublicKey = "+5UW75dqz3E/OdHtaoaI/UBF7yfs9XoC3btogzS02kE="
+const embeddedLicensePublicKey = ""
 
 type App struct {
 	ctx         context.Context
@@ -43,6 +43,8 @@ type App struct {
 }
 
 func NewApp() (*App, error) {
+	_ = loadDotEnv(".env")
+
 	store, err := settings.NewStore("CloudflareTunnelManager")
 	if err != nil {
 		return nil, err
@@ -890,6 +892,45 @@ func resolveDeviceID() string {
 		return "unknown-device"
 	}
 	return deviceID
+}
+
+func loadDotEnv(path string) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	lines := strings.Split(string(content), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		value = strings.Trim(value, `"'`)
+		if key == "" {
+			continue
+		}
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			continue
+		}
+		_ = os.Setenv(key, value)
+	}
+
+	return nil
 }
 
 func nowStamp() string {
