@@ -20,10 +20,10 @@ func main() {
 
 	err = wails.Run(&options.App{
 		Title:            "Cloudflare Tunnel Manager",
-		Width:            1460,
-		Height:           940,
-		MinWidth:         1180,
-		MinHeight:        760,
+		Width:            1040,
+		Height:           700,
+		MinWidth:         900,
+		MinHeight:        620,
 		BackgroundColour: &options.RGBA{R: 247, G: 244, B: 236, A: 1},
 		AssetServer:      &assetserver.Options{Assets: assets},
 		OnStartup:        app.startup,

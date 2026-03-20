@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,6 +30,7 @@ type App struct {
 	manager     *cloudflare.Manager
 	configPath  string
 	homeDir     string
+	appDataDir  string
 	buildMu     sync.Mutex
 	buildCmd    *exec.Cmd
 	lastStateMu sync.Mutex
@@ -49,6 +51,7 @@ func NewApp() (*App, error) {
 		store:      store,
 		configPath: filepath.Join(homeDir, ".cloudflared", "config.yml"),
 		homeDir:    homeDir,
+		appDataDir: filepath.Dir(store.Path()),
 	}
 	app.manager = cloudflare.NewManager(app.configPath, app.pushLog, app.pushStatus)
 	return app, nil
@@ -88,7 +91,9 @@ func (a *App) RefreshState() (models.AppState, error) {
 	status := a.manager.Status()
 	status.TunnelName = settingsValue.TunnelName
 	status.ConfigPath = a.configPath
-	status.DetectedCloudflaredPath = detectedPath
+	if detectErr == nil {
+		status.DetectedCloudflaredPath = detectedPath
+	}
 	if cfgErr == nil {
 		status.ActiveHostnames = cloudflare.HostnamesFromConfig(cfg)
 		status.TunnelID = cfg.Tunnel
@@ -103,17 +108,18 @@ func (a *App) RefreshState() (models.AppState, error) {
 	a.lastStateMu.Lock()
 	defer a.lastStateMu.Unlock()
 	return models.AppState{
-		Settings:             settingsValue,
-		Status:               status,
-		ConfigPath:           a.configPath,
-		SettingsPath:         a.store.Path(),
-		HomeDir:              a.homeDir,
-		CloudflaredDetected:  detectErr == nil,
-		CloudflaredPath:      detectedPath,
-		ConfigReadable:       cfgErr == nil || errors.Is(cfgErr, os.ErrNotExist),
-		ConfigReadError:      errorString(cfgErr),
-		BuildRunning:         a.isBuildRunning(),
-		BuildCommandDetected: a.detectNpmCommand() != "",
+		Settings:               settingsValue,
+		Status:                 status,
+		ConfigPath:             a.configPath,
+		SettingsPath:           a.store.Path(),
+		HomeDir:                a.homeDir,
+		ManagedCloudflaredPath: a.managedCloudflaredPath(),
+		CloudflaredDetected:    detectErr == nil,
+		CloudflaredPath:        detectedPath,
+		ConfigReadable:         cfgErr == nil || errors.Is(cfgErr, os.ErrNotExist),
+		ConfigReadError:        errorString(cfgErr),
+		BuildRunning:           a.isBuildRunning(),
+		BuildCommandDetected:   a.detectNpmCommand() != "",
 	}, nil
 }
 
@@ -218,6 +224,25 @@ func (a *App) StartQuickTunnel(projectID string) (models.AppState, error) {
 	return a.startQuickTunnel(project)
 }
 
+func (a *App) EnsureCloudflared() (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	path, err := a.ensureCloudflared(settingsValue)
+	if err != nil {
+		return models.AppState{}, err
+	}
+	if strings.TrimSpace(settingsValue.CloudflaredPath) != path {
+		settingsValue.CloudflaredPath = path
+		if err := a.store.Save(settingsValue); err != nil {
+			return models.AppState{}, err
+		}
+	}
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "success", Message: "cloudflared is ready at " + path})
+	return a.RefreshState()
+}
+
 func (a *App) StartTunnel() (models.AppState, error) {
 	settingsValue, err := a.store.Load()
 	if err != nil {
@@ -231,9 +256,6 @@ func (a *App) StartTunnel() (models.AppState, error) {
 	cfg, err := cloudflare.ReadConfig(a.configPath)
 	if err != nil {
 		return models.AppState{}, err
-	}
-	if strings.TrimSpace(settingsValue.TunnelName) == "" {
-		return models.AppState{}, errors.New("default tunnel name is required")
 	}
 	if strings.TrimSpace(cfg.Tunnel) == "" {
 		return models.AppState{}, errors.New("config.yml is missing the tunnel UUID")
@@ -481,7 +503,7 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 	if err != nil {
 		return models.AppState{}, err
 	}
-	path, err := a.manager.DetectCloudflared(settingsValue.CloudflaredPath)
+	path, err := a.ensureCloudflared(settingsValue)
 	if err != nil {
 		return models.AppState{}, err
 	}
@@ -492,6 +514,69 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 		return models.AppState{}, err
 	}
 	return a.RefreshState()
+}
+
+func (a *App) managedCloudflaredPath() string {
+	return filepath.Join(a.appDataDir, "bin", "cloudflared.exe")
+}
+
+func (a *App) ensureCloudflared(settingsValue models.AppSettings) (string, error) {
+	if path, err := a.manager.DetectCloudflared(settingsValue.CloudflaredPath); err == nil {
+		return path, nil
+	}
+
+	managedPath := a.managedCloudflaredPath()
+	if _, err := os.Stat(managedPath); err == nil {
+		return managedPath, nil
+	}
+
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "info", Message: "cloudflared not found, downloading managed copy"})
+	if err := a.downloadManagedCloudflared(managedPath); err != nil {
+		return "", err
+	}
+	return managedPath, nil
+}
+
+func (a *App) downloadManagedCloudflared(destination string) error {
+	const downloadURL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+
+	response, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("failed to download cloudflared: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("failed to download cloudflared: HTTP %d", response.StatusCode)
+	}
+
+	tempPath := destination + ".download"
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return err
+	}
+
+	_, copyErr := io.Copy(file, response.Body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("failed to save cloudflared: %w", copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tempPath)
+		return closeErr
+	}
+	if err := os.Rename(tempPath, destination); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "success", Message: "Downloaded managed cloudflared to " + destination})
+	return nil
 }
 
 func (a *App) loadProject(projectID string) (models.AppSettings, models.ProjectPreset, error) {

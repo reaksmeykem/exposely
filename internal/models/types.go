@@ -87,15 +87,16 @@ type TunnelStatus struct {
 }
 
 type AppState struct {
-	Settings             AppSettings  `json:"settings"`
-	Status               TunnelStatus `json:"status"`
-	ConfigPath           string       `json:"configPath"`
-	SettingsPath         string       `json:"settingsPath"`
-	HomeDir              string       `json:"homeDir"`
-	CloudflaredDetected  bool         `json:"cloudflaredDetected"`
-	CloudflaredPath      string       `json:"cloudflaredPath"`
-	ConfigReadable       bool         `json:"configReadable"`
-	ConfigReadError      string       `json:"configReadError"`
-	BuildRunning         bool         `json:"buildRunning"`
-	BuildCommandDetected bool         `json:"buildCommandDetected"`
+	Settings               AppSettings  `json:"settings"`
+	Status                 TunnelStatus `json:"status"`
+	ConfigPath             string       `json:"configPath"`
+	SettingsPath           string       `json:"settingsPath"`
+	HomeDir                string       `json:"homeDir"`
+	ManagedCloudflaredPath string       `json:"managedCloudflaredPath"`
+	CloudflaredDetected    bool         `json:"cloudflaredDetected"`
+	CloudflaredPath        string       `json:"cloudflaredPath"`
+	ConfigReadable         bool         `json:"configReadable"`
+	ConfigReadError        string       `json:"configReadError"`
+	BuildRunning           bool         `json:"buildRunning"`
+	BuildCommandDetected   bool         `json:"buildCommandDetected"`
 }

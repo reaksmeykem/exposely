@@ -138,6 +138,7 @@ export namespace models {
 	    configPath: string;
 	    settingsPath: string;
 	    homeDir: string;
+	    managedCloudflaredPath: string;
 	    cloudflaredDetected: boolean;
 	    cloudflaredPath: string;
 	    configReadable: boolean;
@@ -156,6 +157,7 @@ export namespace models {
 	        this.configPath = source["configPath"];
 	        this.settingsPath = source["settingsPath"];
 	        this.homeDir = source["homeDir"];
+	        this.managedCloudflaredPath = source["managedCloudflaredPath"];
 	        this.cloudflaredDetected = source["cloudflaredDetected"];
 	        this.cloudflaredPath = source["cloudflaredPath"];
 	        this.configReadable = source["configReadable"];

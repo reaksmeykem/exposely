@@ -18,6 +18,10 @@ export function DeleteProject(arg1) {
   return window['go']['main']['App']['DeleteProject'](arg1);
 }
 
+export function EnsureCloudflared() {
+  return window['go']['main']['App']['EnsureCloudflared']();
+}
+
 export function OpenConfigFile() {
   return window['go']['main']['App']['OpenConfigFile']();
 }

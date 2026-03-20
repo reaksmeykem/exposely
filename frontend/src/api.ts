@@ -13,6 +13,7 @@ function appBinding(): AppBindings {
 export const api = {
   bootstrap: (): Promise<AppState> => appBinding().Bootstrap(),
   refreshState: (): Promise<AppState> => appBinding().RefreshState(),
+  ensureCloudflared: (): Promise<AppState> => (appBinding() as AppBindings & { EnsureCloudflared(): Promise<AppState> }).EnsureCloudflared(),
   saveSettings: (settings: AppSettings): Promise<AppState> => appBinding().SaveSettings(settings),
   saveProject: (project: ProjectPreset): Promise<AppState> => appBinding().SaveProject(project),
   deleteProject: (id: string): Promise<AppState> => appBinding().DeleteProject(id),

@@ -46,6 +46,7 @@ export interface AppState {
   configPath: string;
   settingsPath: string;
   homeDir: string;
+  managedCloudflaredPath: string;
   cloudflaredDetected: boolean;
   cloudflaredPath: string;
   configReadable: boolean;

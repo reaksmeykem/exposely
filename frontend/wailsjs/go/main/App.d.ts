@@ -10,6 +10,8 @@ export function CreateTunnel():Promise<models.AppState>;
 
 export function DeleteProject(arg1:string):Promise<models.AppState>;
 
+export function EnsureCloudflared():Promise<models.AppState>;
+
 export function OpenConfigFile():Promise<void>;
 
 export function OpenPublicURL(arg1:string):Promise<void>;

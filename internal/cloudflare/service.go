@@ -57,6 +57,9 @@ func (m *Manager) Status() models.TunnelStatus {
 func (m *Manager) DetectCloudflared(configuredPath string) (string, error) {
 	candidates := []string{
 		strings.TrimSpace(configuredPath),
+		filepath.Join(filepath.Dir(m.configPath), "bin", "cloudflared.exe"),
+		filepath.Join(filepath.Dir(os.Args[0]), "cloudflared.exe"),
+		filepath.Join(filepath.Dir(os.Args[0]), "bin", "cloudflared.exe"),
 		"cloudflared",
 		`C:\Program Files\cloudflared\cloudflared.exe`,
 		`C:\Program Files (x86)\cloudflared\cloudflared.exe`,
@@ -167,7 +170,16 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 		return errors.New("cloudflared is already running")
 	}
 
-	args := []string{"tunnel", "--config", configPath, "--loglevel", "info", "run", tunnelName}
+	reference := strings.TrimSpace(tunnelID)
+	if reference == "" {
+		reference = strings.TrimSpace(tunnelName)
+	}
+	if reference == "" {
+		m.mu.Unlock()
+		return errors.New("tunnel reference is required")
+	}
+
+	args := []string{"tunnel", "--config", configPath, "--loglevel", "info", "run", reference}
 	cmd := exec.Command(cloudflaredPath, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -202,7 +214,11 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 	go m.StreamPipe("cloudflared", stdout)
 	go m.StreamPipe("cloudflared", stderr)
 	go m.waitForProcess("named", cmd)
-	m.pushLog("cloudflared", "info", fmt.Sprintf("Started named tunnel %s", tunnelName))
+	logLabel := strings.TrimSpace(tunnelName)
+	if logLabel == "" {
+		logLabel = reference
+	}
+	m.pushLog("cloudflared", "info", fmt.Sprintf("Started named tunnel %s", logLabel))
 	return nil
 }
 
