@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -8,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,6 +32,8 @@ import (
 
 const embeddedLicensePublicKey = ""
 
+var localServiceURLPattern = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(?:/[^\s"'<>]*)?`)
+
 type App struct {
 	ctx         context.Context
 	store       *settings.Store
@@ -39,6 +44,8 @@ type App struct {
 	deviceID    string
 	buildMu     sync.Mutex
 	buildCmd    *exec.Cmd
+	projectMu   sync.Mutex
+	projectCmd  *exec.Cmd
 	lastStateMu sync.Mutex
 }
 
@@ -73,6 +80,7 @@ func (a *App) startup(ctx context.Context) {
 
 func (a *App) shutdown(context.Context) {
 	_ = a.manager.StopTunnel()
+	a.stopProjectCommand()
 	a.stopBuild()
 }
 
@@ -131,7 +139,7 @@ func (a *App) RefreshState() (models.AppState, error) {
 		ConfigReadError:        errorString(cfgErr),
 		BuildRunning:           a.isBuildRunning(),
 		BuildCommandDetected:   a.detectNpmCommand() != "",
-		ProductVersion:         "1.0.5",
+		ProductVersion:         "1.0.7",
 	}, nil
 }
 
@@ -155,17 +163,22 @@ func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
 	if strings.TrimSpace(input.DisplayName) == "" {
 		return models.AppState{}, errors.New("display name is required")
 	}
-	if strings.TrimSpace(input.LocalHost) == "" {
+	if normalizeShareMode(input.ShareMode) == models.ShareModeQuick && strings.TrimSpace(input.LocalHost) == "" {
 		return models.AppState{}, errors.New("local herd hostname is required")
 	}
-	if strings.TrimSpace(input.ProjectPath) == "" {
-		return models.AppState{}, errors.New("project folder path is required")
+	if strings.TrimSpace(input.StartCommand) != "" && strings.TrimSpace(input.ProjectPath) == "" {
+		return models.AppState{}, errors.New("project folder path is required when a start command is set")
+	}
+	if err := validateProjectSource(input); err != nil {
+		return models.AppState{}, err
 	}
 
 	input.ID = ensureID(input.ID)
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	input.LocalHost = strings.TrimSpace(input.LocalHost)
 	input.ProjectPath = strings.TrimSpace(input.ProjectPath)
+	input.LocalURL = strings.TrimSpace(input.LocalURL)
+	input.StartCommand = strings.TrimSpace(input.StartCommand)
 	input.Subdomain = strings.TrimSpace(strings.ToLower(input.Subdomain))
 	input.ShareMode = normalizeShareMode(input.ShareMode)
 	input.PublicURL = a.projectPublicURL(input, settingsValue.DefaultDomain)
@@ -217,13 +230,525 @@ func (a *App) ShareProject(projectID string) (models.AppState, error) {
 	}
 
 	switch normalizeShareMode(project.ShareMode) {
+	case models.ShareModeAuto:
+		return a.startAutoTunnel(project)
 	case models.ShareModeQuick:
 		return a.startQuickTunnel(project)
+	case models.ShareModeHostHTML:
+		return a.startHTMLTunnel(project)
 	case models.ShareModeRandomDomain:
 		return a.shareProjectThroughNamedTunnel(settingsValue, project, true)
 	default:
 		return a.shareProjectThroughNamedTunnel(settingsValue, project, false)
 	}
+}
+
+func (a *App) startHTMLTunnel(project models.ProjectPreset) (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	path, err := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
+	if err != nil {
+		return models.AppState{}, err
+	}
+	if a.manager.Status().Running {
+		_ = a.manager.StopTunnel()
+	}
+	a.stopProjectCommand()
+
+	serviceURL, port, server, err := a.resolveHTMLOrigin(project)
+	if err != nil {
+		return models.AppState{}, err
+	}
+	if server == nil {
+		if err := checkLocalHTTPService(serviceURL); err != nil {
+			return models.AppState{}, fmt.Errorf("HTML local URL is not reachable: %w", err)
+		}
+	}
+
+	if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server); err != nil {
+		if server != nil {
+			_ = server.Shutdown(context.Background())
+		}
+		return models.AppState{}, err
+	}
+	return a.RefreshState()
+}
+
+func (a *App) startAutoTunnel(project models.ProjectPreset) (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	path, err := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
+	if err != nil {
+		return models.AppState{}, err
+	}
+	if a.manager.Status().Running {
+		_ = a.manager.StopTunnel()
+	}
+	a.stopProjectCommand()
+
+	if strings.TrimSpace(project.StartCommand) != "" {
+		serviceURL, err := a.startProjectAndDetectURL(project)
+		if err != nil {
+			return models.AppState{}, err
+		}
+		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil); err != nil {
+			a.stopProjectCommand()
+			return models.AppState{}, err
+		}
+		return a.RefreshState()
+	}
+
+	if serviceURL, ok, err := resolveProjectServiceURL(project); ok {
+		if err != nil {
+			return models.AppState{}, err
+		}
+		if err := checkLocalHTTPService(serviceURL); err != nil {
+			return models.AppState{}, fmt.Errorf("local URL is not reachable: %w", err)
+		}
+		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil); err != nil {
+			return models.AppState{}, err
+		}
+		return a.RefreshState()
+	}
+
+	if strings.TrimSpace(project.LocalHost) != "" {
+		return a.startQuickTunnel(project)
+	}
+
+	projectDir, err := a.resolveProjectDirectory(project.ProjectPath)
+	if err != nil {
+		return models.AppState{}, err
+	}
+	if staticDir, ok := detectStaticSiteDir(projectDir); ok {
+		serviceURL, port, server, err := a.serveStaticDirectory(staticDir)
+		if err != nil {
+			return models.AppState{}, err
+		}
+		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server); err != nil {
+			_ = server.Shutdown(context.Background())
+			return models.AppState{}, err
+		}
+		return a.RefreshState()
+	}
+
+	return models.AppState{}, errors.New("Auto mode could not determine how to run this project. Set a local URL, set a start command, provide a local host for Laravel, or point to a folder with index.html/dist/build output")
+}
+
+func (a *App) resolveHTMLOrigin(project models.ProjectPreset) (string, int, *http.Server, error) {
+	if serviceURL, ok, err := resolveProjectServiceURL(project); ok {
+		if err != nil {
+			return "", 0, nil, err
+		}
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "html-server",
+			Level:     "info",
+			Message:   fmt.Sprintf("Using existing local HTML server at %s", serviceURL),
+		})
+		return serviceURL, 0, nil, nil
+	}
+
+	projectDir, err := a.resolveProjectDirectory(project.ProjectPath)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	return a.serveStaticDirectory(projectDir)
+}
+
+func resolveProjectServiceURL(project models.ProjectPreset) (string, bool, error) {
+	if serviceURL, ok, err := normalizeServiceURL(project.LocalURL); ok {
+		return serviceURL, ok, err
+	}
+	return normalizeServiceURL(project.ProjectPath)
+}
+
+func normalizeServiceURL(raw string) (string, bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	if len(trimmed) >= 2 && trimmed[1] == ':' {
+		return "", false, nil
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		if strings.Contains(trimmed, "://") {
+			return "", true, fmt.Errorf("invalid local URL: %w", err)
+		}
+		return "", false, nil
+	}
+
+	if parsed.Scheme == "" {
+		return "", false, nil
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", true, errors.New("local URL must use http or https")
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return "", true, errors.New("local URL must include a host")
+	}
+
+	normalized := &url.URL{
+		Scheme: scheme,
+		Host:   parsed.Host,
+	}
+	return normalized.String(), true, nil
+}
+
+func checkLocalHTTPService(serviceURL string) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(serviceURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusInternalServerError {
+		return fmt.Errorf("%s responded with HTTP %d", serviceURL, resp.StatusCode)
+	}
+	return nil
+}
+
+func (a *App) resolveProjectDirectory(projectPath string) (string, error) {
+	trimmed := strings.TrimSpace(projectPath)
+	if trimmed == "" {
+		return "", errors.New("project folder path is required")
+	}
+
+	absPath := trimmed
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(a.homeDir, absPath)
+	}
+
+	if info, err := os.Stat(absPath); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("project folder not found or is not a directory: %s", absPath)
+	}
+	return absPath, nil
+}
+
+func detectStaticSiteDir(projectDir string) (string, bool) {
+	candidates := []string{
+		projectDir,
+		filepath.Join(projectDir, "dist"),
+		filepath.Join(projectDir, "build"),
+		filepath.Join(projectDir, "public"),
+	}
+
+	for _, candidate := range candidates {
+		indexPath := filepath.Join(candidate, "index.html")
+		if info, err := os.Stat(indexPath); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func (a *App) serveStaticDirectory(absPath string) (string, int, *http.Server, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		listener, err = net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			return "", 0, nil, fmt.Errorf("failed to find a free port for static site: %w", err)
+		}
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a.pushLog(models.LogEntry{
+				Timestamp: nowStamp(),
+				Source:    "html-server",
+				Level:     "info",
+				Message:   fmt.Sprintf("Request: %s %s from %s [Host: %s]", r.Method, r.URL.Path, r.RemoteAddr, r.Host),
+			})
+
+			cleanPath := filepath.FromSlash(r.URL.Path)
+			relPath := strings.TrimPrefix(cleanPath, string(filepath.Separator))
+			fullPath := filepath.Join(absPath, relPath)
+			if info, err := os.Stat(fullPath); err == nil && info.IsDir() {
+				indexFile := filepath.Join(fullPath, "index.html")
+				if _, err := os.Stat(indexFile); err != nil {
+					a.pushLog(models.LogEntry{
+						Timestamp: nowStamp(),
+						Source:    "html-server",
+						Level:     "error",
+						Message:   fmt.Sprintf("Directory accessed but index.html not found: %s", fullPath),
+					})
+				}
+			} else if err != nil && os.IsNotExist(err) {
+				a.pushLog(models.LogEntry{
+					Timestamp: nowStamp(),
+					Source:    "html-server",
+					Level:     "error",
+					Message:   fmt.Sprintf("File not found: %s", fullPath),
+				})
+			}
+
+			http.FileServer(http.Dir(absPath)).ServeHTTP(w, r)
+		}),
+	}
+
+	go func() {
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "html-server",
+			Level:     "info",
+			Message:   fmt.Sprintf("Static server started on %s for %s", serviceURL, absPath),
+		})
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			a.pushLog(models.LogEntry{
+				Timestamp: nowStamp(),
+				Source:    "html-server",
+				Level:     "error",
+				Message:   fmt.Sprintf("Static server failed: %v", err),
+			})
+		}
+	}()
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if err := checkLocalHTTPService(serviceURL); err != nil {
+			a.pushLog(models.LogEntry{
+				Timestamp: nowStamp(),
+				Source:    "html-server",
+				Level:     "error",
+				Message:   fmt.Sprintf("Self-connectivity check failed for %s: %v", serviceURL, err),
+			})
+			return
+		}
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "html-server",
+			Level:     "info",
+			Message:   fmt.Sprintf("Self-connectivity check successful for %s", serviceURL),
+		})
+	}()
+
+	return serviceURL, port, server, nil
+}
+
+func (a *App) startProjectAndDetectURL(project models.ProjectPreset) (string, error) {
+	projectDir, err := a.resolveProjectDirectory(project.ProjectPath)
+	if err != nil {
+		return "", err
+	}
+
+	urlCh, err := a.startProjectCommand(projectDir, project.StartCommand)
+	if err != nil {
+		return "", err
+	}
+
+	return a.waitForProjectServiceURL(project, urlCh)
+}
+
+func (a *App) startProjectCommand(projectDir, commandText string) (<-chan string, error) {
+	a.projectMu.Lock()
+	defer a.projectMu.Unlock()
+
+	if a.projectCmd != nil && a.projectCmd.Process != nil {
+		return nil, errors.New("a project start command is already running")
+	}
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/C", commandText)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+	} else {
+		cmd = exec.Command("sh", "-lc", commandText)
+	}
+	cmd.Dir = projectDir
+	cmd.Env = os.Environ()
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	a.projectCmd = cmd
+	urlCh := make(chan string, 8)
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "project",
+		Level:     "info",
+		Message:   "Started project command: " + commandText,
+	})
+
+	go a.streamProjectPipe("project", stdout, urlCh)
+	go a.streamProjectPipe("project", stderr, urlCh)
+	go a.waitForProjectCommand(cmd, commandText)
+
+	return urlCh, nil
+}
+
+func (a *App) streamProjectPipe(source string, pipe io.ReadCloser, urlCh chan<- string) {
+	scanner := bufio.NewScanner(pipe)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		level := "info"
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "error") || strings.Contains(lower, "failed") {
+			level = "error"
+		}
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    source,
+			Level:     level,
+			Message:   line,
+		})
+
+		if match := localServiceURLPattern.FindString(line); match != "" {
+			if normalized, ok, err := normalizeServiceURL(match); ok && err == nil {
+				select {
+				case urlCh <- normalized:
+				default:
+				}
+			}
+		}
+	}
+}
+
+func (a *App) waitForProjectCommand(cmd *exec.Cmd, commandText string) {
+	err := cmd.Wait()
+
+	a.projectMu.Lock()
+	if a.projectCmd == cmd {
+		a.projectCmd = nil
+	}
+	a.projectMu.Unlock()
+
+	if err != nil {
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "project",
+			Level:     "error",
+			Message:   "Project command exited: " + err.Error(),
+		})
+		return
+	}
+
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "project",
+		Level:     "info",
+		Message:   "Project command exited: " + commandText,
+	})
+}
+
+func (a *App) waitForProjectServiceURL(project models.ProjectPreset, urlCh <-chan string) (string, error) {
+	candidateSet := map[string]struct{}{}
+	candidates := make([]string, 0, 8)
+	addCandidate := func(raw string) {
+		if normalized, ok, err := normalizeServiceURL(raw); ok && err == nil {
+			if _, exists := candidateSet[normalized]; !exists {
+				candidateSet[normalized] = struct{}{}
+				candidates = append(candidates, normalized)
+			}
+		}
+	}
+
+	addCandidate(project.LocalURL)
+	if serviceURL, ok, _ := normalizeServiceURL(project.ProjectPath); ok {
+		addCandidate(serviceURL)
+	}
+	for _, port := range detectCommandPorts(project.StartCommand) {
+		addCandidate(fmt.Sprintf("http://127.0.0.1:%d", port))
+	}
+	for _, port := range []int{5173, 4173, 3000, 8080, 8000, 5500, 4321, 4200, 5000} {
+		addCandidate(fmt.Sprintf("http://127.0.0.1:%d", port))
+	}
+
+	timeout := time.NewTimer(25 * time.Second)
+	defer timeout.Stop()
+	ticker := time.NewTicker(600 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		for _, candidate := range candidates {
+			if err := checkLocalHTTPService(candidate); err == nil {
+				a.pushLog(models.LogEntry{
+					Timestamp: nowStamp(),
+					Source:    "project",
+					Level:     "success",
+					Message:   "Detected local project URL at " + candidate,
+				})
+				return candidate, nil
+			}
+		}
+
+		select {
+		case detected := <-urlCh:
+			addCandidate(detected)
+		case <-ticker.C:
+		case <-timeout.C:
+			a.stopProjectCommand()
+			return "", errors.New("could not detect a running local project URL. Set Local URL explicitly or use a start command that exposes a local HTTP server")
+		}
+	}
+}
+
+func detectCommandPorts(commandText string) []int {
+	fields := strings.Fields(commandText)
+	ports := make([]int, 0, 4)
+	seen := map[int]struct{}{}
+
+	addPort := func(port int) {
+		if port <= 0 || port > 65535 {
+			return
+		}
+		if _, exists := seen[port]; exists {
+			return
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+
+	for i, field := range fields {
+		lower := strings.ToLower(field)
+		switch {
+		case lower == "--port" || lower == "-p":
+			if i+1 < len(fields) {
+				var port int
+				if _, err := fmt.Sscanf(fields[i+1], "%d", &port); err == nil {
+					addPort(port)
+				}
+			}
+		case strings.HasPrefix(lower, "--port="):
+			var port int
+			if _, err := fmt.Sscanf(strings.TrimPrefix(lower, "--port="), "%d", &port); err == nil {
+				addPort(port)
+			}
+		case strings.HasPrefix(lower, "port="):
+			var port int
+			if _, err := fmt.Sscanf(strings.TrimPrefix(lower, "port="), "%d", &port); err == nil {
+				addPort(port)
+			}
+		}
+	}
+
+	return ports
 }
 
 func (a *App) ShareProjectWithRandomURL(projectID string) (models.AppState, error) {
@@ -242,7 +767,14 @@ func (a *App) StartQuickTunnel(projectID string) (models.AppState, error) {
 	if err != nil {
 		return models.AppState{}, err
 	}
-	return a.startQuickTunnel(project)
+	switch normalizeShareMode(project.ShareMode) {
+	case models.ShareModeAuto:
+		return a.startAutoTunnel(project)
+	case models.ShareModeHostHTML:
+		return a.startHTMLTunnel(project)
+	default:
+		return a.startQuickTunnel(project)
+	}
 }
 
 func (a *App) EnsureCloudflared() (models.AppState, error) {
@@ -316,6 +848,7 @@ func (a *App) StopTunnel() (models.AppState, error) {
 	if err := a.manager.StopTunnel(); err != nil {
 		return models.AppState{}, err
 	}
+	a.stopProjectCommand()
 	return a.RefreshState()
 }
 
@@ -577,6 +1110,7 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 		})
 		_ = a.manager.StopTunnel()
 	}
+	a.stopProjectCommand()
 
 	if err := a.manager.StartNamedTunnel(path, a.configPath, settingsValue.TunnelName, info.ID, cloudflare.HostnamesFromConfig(cfg)); err != nil {
 		return models.AppState{}, err
@@ -596,6 +1130,7 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 	if a.manager.Status().Running {
 		_ = a.manager.StopTunnel()
 	}
+	a.stopProjectCommand()
 	if err := a.manager.StartQuickTunnel(path, settingsValue.DefaultServiceURL, project.LocalHost); err != nil {
 		return models.AppState{}, err
 	}
@@ -704,6 +1239,11 @@ func (a *App) normalizeSettings(input models.AppSettings) models.AppSettings {
 	}
 	for i := range output.Projects {
 		output.Projects[i].ID = ensureID(output.Projects[i].ID)
+		output.Projects[i].DisplayName = strings.TrimSpace(output.Projects[i].DisplayName)
+		output.Projects[i].LocalHost = strings.TrimSpace(output.Projects[i].LocalHost)
+		output.Projects[i].ProjectPath = strings.TrimSpace(output.Projects[i].ProjectPath)
+		output.Projects[i].LocalURL = strings.TrimSpace(output.Projects[i].LocalURL)
+		output.Projects[i].StartCommand = strings.TrimSpace(output.Projects[i].StartCommand)
 		output.Projects[i].ShareMode = normalizeShareMode(output.Projects[i].ShareMode)
 		if strings.TrimSpace(output.Projects[i].PublicURL) == "" {
 			output.Projects[i].PublicURL = a.projectPublicURL(output.Projects[i], output.DefaultDomain)
@@ -760,7 +1300,7 @@ func (a *App) isAdminLicensed() bool {
 
 func (a *App) projectPublicURL(project models.ProjectPreset, domain string) string {
 	switch normalizeShareMode(project.ShareMode) {
-	case models.ShareModeQuick:
+	case models.ShareModeAuto, models.ShareModeQuick, models.ShareModeHostHTML:
 		return strings.TrimSpace(project.PublicURL)
 	case models.ShareModeRandomDomain:
 		return strings.TrimSpace(project.PublicURL)
@@ -828,9 +1368,37 @@ func (a *App) isBuildRunning() bool {
 	return a.buildCmd != nil && a.buildCmd.Process != nil
 }
 
+func (a *App) stopProjectCommand() {
+	a.projectMu.Lock()
+	defer a.projectMu.Unlock()
+	if a.projectCmd == nil || a.projectCmd.Process == nil {
+		return
+	}
+	_ = exec.Command("taskkill", "/PID", fmt.Sprint(a.projectCmd.Process.Pid), "/T", "/F").Run()
+	a.projectCmd = nil
+}
+
+func validateProjectSource(input models.ProjectPreset) error {
+	switch normalizeShareMode(input.ShareMode) {
+	case models.ShareModeAuto:
+		if strings.TrimSpace(input.ProjectPath) == "" && strings.TrimSpace(input.LocalURL) == "" && strings.TrimSpace(input.LocalHost) == "" {
+			return errors.New("Auto mode requires a project folder, local URL, or local host")
+		}
+	case models.ShareModeHostHTML:
+		if strings.TrimSpace(input.ProjectPath) == "" && strings.TrimSpace(input.LocalURL) == "" {
+			return errors.New("HTML mode requires a project folder or local URL")
+		}
+	default:
+		if strings.TrimSpace(input.ProjectPath) == "" {
+			return errors.New("project folder path is required")
+		}
+	}
+	return nil
+}
+
 func normalizeShareMode(mode models.ShareMode) models.ShareMode {
 	switch mode {
-	case models.ShareModeQuick:
+	case models.ShareModeAuto, models.ShareModeQuick, models.ShareModeHostHTML:
 		return mode
 	default:
 		return models.ShareModeQuick

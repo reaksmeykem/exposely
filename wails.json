@@ -12,7 +12,7 @@
   "info": {
     "companyName": "Cloudflare Tunnel Manager",
     "productName": "Cloudflare Tunnel Manager",
-    "productVersion": "1.0.7",
+    "productVersion": "1.0.13",
     "copyright": "Copyright 2026",
     "comments": "Manage your Cloudflare Tunnels easily"
   },

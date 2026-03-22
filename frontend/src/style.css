@@ -342,6 +342,20 @@ label {
   text-overflow: ellipsis;
 }
 
+.project-type-tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  opacity: 0.7;
+  background: rgba(0,0,0,0.05);
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-top: 2px;
+}
+
+.project-row.selected .project-type-tag {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .project-running-badge {
   font-size: 0.65rem;
   font-weight: 700;

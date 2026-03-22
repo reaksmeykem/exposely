@@ -3,10 +3,12 @@ package cloudflare
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +40,7 @@ type Manager struct {
 	cmd        *exec.Cmd
 	stopPID    int
 	quickHomes map[int]string
+	htmlServer *http.Server
 }
 
 func NewManager(configPath string, logSink func(models.LogEntry), statusSink func(models.TunnelStatus)) *Manager {
@@ -235,6 +238,10 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 }
 
 func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader string) error {
+	return m.StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHeader, 0, nil)
+}
+
+func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHeader string, htmlPort int, htmlServer *http.Server) error {
 	m.mu.Lock()
 	if m.cmd != nil && m.cmd.Process != nil {
 		m.mu.Unlock()
@@ -247,10 +254,8 @@ func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader strin
 		return err
 	}
 
-	args := []string{"tunnel", "--url", serviceURL}
-	if strings.TrimSpace(hostHeader) != "" {
-		args = append(args, "--http-host-header", hostHeader)
-	}
+	args := quickTunnelArgs(serviceURL, hostHeader)
+
 	cmd := exec.Command(cloudflaredPath, args...)
 	if runtime.GOOS == "windows" {
 		cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -284,12 +289,14 @@ func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader strin
 	m.cmd = cmd
 	m.stopPID = 0
 	m.quickHomes[cmd.Process.Pid] = tempHome
+	m.htmlServer = htmlServer
 	m.status.Running = true
 	m.status.Mode = "quick"
 	m.status.PID = cmd.Process.Pid
 	m.status.ActiveHostnames = nil
 	m.status.ActiveURL = ""
 	m.status.QuickURL = ""
+	m.status.HTMLServerPort = htmlPort
 	m.status.LastError = ""
 	m.emitStatusLocked()
 	m.mu.Unlock()
@@ -299,6 +306,22 @@ func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader strin
 	go m.waitForProcess("quick", cmd)
 	m.pushLog("cloudflared", "info", "Started quick tunnel")
 	return nil
+}
+
+func quickTunnelArgs(serviceURL, hostHeader string) []string {
+	args := []string{"tunnel", "--url", serviceURL}
+
+	trimmedHostHeader := strings.TrimSpace(hostHeader)
+	if trimmedHostHeader != "" {
+		return append(args, "--http-host-header", trimmedHostHeader)
+	}
+
+	if strings.HasPrefix(serviceURL, "http://127.0.0.1") || strings.HasPrefix(serviceURL, "http://localhost") {
+		// Keep loopback-origin arguments minimal and compatible with current cloudflared versions.
+		return append(args, "--proxy-connect-timeout", "10s")
+	}
+
+	return args
 }
 
 func (m *Manager) StopTunnel() error {
@@ -325,11 +348,16 @@ func (m *Manager) StopTunnel() error {
 	}
 
 	m.mu.Lock()
+	if m.htmlServer != nil {
+		_ = m.htmlServer.Shutdown(context.Background())
+		m.htmlServer = nil
+	}
 	m.cmd = nil
 	m.status.Running = false
 	m.status.PID = 0
 	m.status.ActiveURL = ""
 	m.status.QuickURL = ""
+	m.status.HTMLServerPort = 0
 	m.emitStatusLocked()
 	m.mu.Unlock()
 
@@ -374,6 +402,10 @@ func (m *Manager) waitForProcess(mode string, cmd *exec.Cmd) {
 	}
 
 	m.mu.Lock()
+	if m.htmlServer != nil {
+		_ = m.htmlServer.Shutdown(context.Background())
+		m.htmlServer = nil
+	}
 	expectedStop := m.stopPID != 0 && pid == m.stopPID
 	if expectedStop {
 		m.stopPID = 0
@@ -388,6 +420,7 @@ func (m *Manager) waitForProcess(mode string, cmd *exec.Cmd) {
 	}
 	m.status.Running = false
 	m.status.PID = 0
+	m.status.HTMLServerPort = 0
 	if mode == "quick" {
 		m.status.ActiveURL = ""
 		m.status.QuickURL = ""

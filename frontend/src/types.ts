@@ -1,4 +1,4 @@
-export type ShareMode = 'stable' | 'random-domain' | 'quick';
+export type ShareMode = 'auto' | 'stable' | 'random-domain' | 'quick' | 'host-html';
 
 export interface ProjectPreset {
   id: string;
@@ -7,6 +7,8 @@ export interface ProjectPreset {
   subdomain: string;
   publicURL: string;
   projectPath: string;
+  localURL: string;
+  startCommand: string;
   shareMode: ShareMode;
 }
 

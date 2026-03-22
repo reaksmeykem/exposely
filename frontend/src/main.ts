@@ -34,7 +34,9 @@ const blankProject = (): ProjectPreset => ({
   subdomain: '',
   publicURL: '',
   projectPath: '',
-  shareMode: 'quick',
+  localURL: '',
+  startCommand: '',
+  shareMode: 'auto',
 });
 
 const state: UIState = {
@@ -95,16 +97,24 @@ function resolvedProjectURL(project: ProjectPreset, appState: AppState): string 
 
 function shareActionForProject(project: ProjectPreset): { action: string; label: string } {
   switch (project.shareMode) {
+    case 'auto':
+      return { action: 'share-quick', label: 'Start Auto Share' };
     case 'quick':
       return { action: 'share-quick', label: 'Create Public URL' };
+    case 'host-html':
+      return { action: 'share-quick', label: 'Create HTML Site URL' };
     default:
       return { action: 'share-quick', label: 'Create Public URL' };
   }
 }
 
+function looksLikeURL(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim());
+}
+
 function inferLocalHostFromPath(projectPath: string): string {
   const normalized = projectPath.trim().replace(/[/\\]+$/, '');
-  if (!normalized) return '';
+  if (!normalized || looksLikeURL(normalized)) return '';
 
   const segments = normalized.split(/[/\\]+/);
   const folderName = segments[segments.length - 1]?.trim() ?? '';
@@ -117,6 +127,26 @@ function inferLocalHostFromPath(projectPath: string): string {
 
   if (!hostname) return '';
   return `${hostname}.test`;
+}
+
+function projectTypeLabel(project: ProjectPreset): string {
+  switch (project.shareMode) {
+    case 'auto':
+      return 'Auto Project';
+    case 'host-html':
+      return 'HTML Project';
+    default:
+      return 'Laravel Project';
+  }
+}
+
+function projectPrimaryTarget(project: ProjectPreset): string {
+  if (project.localURL.trim()) return project.localURL.trim();
+  if (looksLikeURL(project.projectPath)) return project.projectPath.trim();
+  if (project.shareMode === 'host-html') return 'HTML Site (Folder)';
+  if (project.localHost.trim()) return project.localHost.trim();
+  if (project.startCommand.trim()) return `Auto via ${project.startCommand.trim()}`;
+  return project.projectPath.trim() || 'Project source';
 }
 
 function randomSubdomainValue(): string {
@@ -173,6 +203,10 @@ function setBusy(label: string | null) {
 
 function shareModeLabel(mode: ShareMode): string {
   switch (mode) {
+    case 'auto':
+      return 'Auto';
+    case 'host-html':
+      return 'HTML Site';
     default:
       return 'Public URL';
   }
@@ -209,6 +243,7 @@ function projectRows(appState: AppState): string {
         <button type="button" class="project-row ${isSelected ? 'selected' : ''}" data-action="select-project" data-id="${escapeHtml(project.id)}">
           <div class="project-copy">
             <strong>${escapeHtml(project.displayName)}</strong>
+            <span class="project-type-tag">${escapeHtml(projectTypeLabel(project))}</span>
           </div>
           ${showRunning ? '<span class="project-running-badge">Running</span>' : ''}
         </button>
@@ -257,11 +292,11 @@ function render() {
     project
       && shareAction
       && shareToolReady
-      && project.shareMode === 'quick',
+      && (project.shareMode === 'auto' || project.shareMode === 'quick' || project.shareMode === 'host-html'),
   );
   const canStartTunnel = project ? canShareSelectedProject : shareToolReady && hasProjects;
-  const canRunProjectBuild = Boolean(project?.projectPath.trim()) && appState.buildCommandDetected && !appState.buildRunning;
-  const canTestProject = Boolean(project?.localHost.trim());
+  const canRunProjectBuild = Boolean(project?.projectPath.trim()) && !looksLikeURL(project?.projectPath ?? '') && appState.buildCommandDetected && !appState.buildRunning;
+  const canTestProject = Boolean(project?.localHost.trim()) && project?.shareMode !== 'host-html' && project?.shareMode !== 'auto';
   const shareToolStatusLabel = shareToolReady ? 'Installed' : 'Not installed';
   const shareToolStatusBadgeClass = shareToolReady ? 'pill-success' : 'pill-outline';
   const shareToolStatusMessage = shareToolReady
@@ -399,29 +434,70 @@ function render() {
                   <input type="hidden" name="id" value="${escapeHtml(state.editorProject.id)}" />
                   <label class="wide">Display name<input name="displayName" value="${escapeHtml(state.editorProject.displayName)}" /></label>
                   <label class="wide">
-                    Project folder
+                    ${state.editorProject.shareMode === 'quick' ? 'Project folder' : 'Project folder (optional when Local URL is set)'}
                     <div class="folder-picker">
-                      <input name="projectPath" value="${escapeHtml(state.editorProject.projectPath)}" placeholder="D:\\code\\hr-system" />
+                      <input
+                        name="projectPath"
+                        value="${escapeHtml(state.editorProject.projectPath)}"
+                        placeholder="${state.editorProject.shareMode === 'quick' ? 'D:\\code\\hr-system' : 'D:\\code\\site'}"
+                      />
                       <button type="button" class="secondary browse-button" data-action="browse-project-folder">Browse</button>
                     </div>
                   </label>
-                  <label>Local host<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="hr-system.test" /></label>
                   <label>
-                    Share mode
-                    <input name="shareModeLabel" value="Cloudflare Tunnel URL" disabled />
-                    <input type="hidden" name="shareMode" value="quick" />
+                    Project Type
+                    <select name="shareMode">
+                      <option value="auto" ${state.editorProject.shareMode === 'auto' ? 'selected' : ''}>Auto Detect Project</option>
+                      <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>Laravel Project (Local Server)</option>
+                      <option value="host-html" ${state.editorProject.shareMode === 'host-html' ? 'selected' : ''}>HTML Project (Folder or Local URL)</option>
+                    </select>
                   </label>
-                   ${
-                     `
-                       <div class="field-hint hint-success">
-                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
-                          <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                        <span>This mode generates a Cloudflare public tunnel URL without asking for a custom domain.</span>
-                      </div>
-                    `
+                  ${
+                    state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto'
+                      ? `<label>${state.editorProject.shareMode === 'auto' ? 'Local host (optional)' : 'Local host'}<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="hr-system.test" /></label>`
+                      : ''
                   }
+                  ${
+                    state.editorProject.shareMode === 'auto' || state.editorProject.shareMode === 'host-html'
+                      ? `<label>Local URL (optional)<input name="localURL" value="${escapeHtml(state.editorProject.localURL)}" placeholder="http://127.0.0.1:5500" /></label>`
+                      : ''
+                  }
+                  ${
+                    state.editorProject.shareMode === 'auto'
+                      ? `<label class="wide">Start command (optional)<input name="startCommand" value="${escapeHtml(state.editorProject.startCommand)}" placeholder="npm run dev -- --port 4173" /></label>`
+                      : ''
+                  }
+                   ${
+                     state.editorProject.shareMode === 'host-html'
+                       ? `
+                        <div class="field-hint hint-info">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                           <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+                           <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                         </svg>
+                         <span>Share either a local HTML folder or an already running local URL like http://127.0.0.1:5500 via Cloudflare Tunnel.</span>
+                        </div>
+                        `
+                      : state.editorProject.shareMode === 'auto'
+                        ? `
+                        <div class="field-hint hint-info">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                           <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+                           <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                         </svg>
+                         <span>Auto mode can use a local URL, run a start command and detect the dev server, use a Laravel host, or serve a static folder/build output.</span>
+                        </div>
+                        `
+                       : `
+                        <div class="field-hint hint-success">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                           <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+                           <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                         </svg>
+                         <span>Expose your local Laravel Herd hostname securely to a public URL.</span>
+                       </div>
+                     `
+                   }
                   <div class="action-row wide"><button type="submit">${state.editorMode === 'create' ? 'Save Project' : 'Update Project'}</button></div>
                 </form>
               </section>
@@ -475,7 +551,7 @@ function render() {
                       ? `
                         <div class="hero-project">
                           <div class="hero-project-main">
-                            <strong>${escapeHtml(project.localHost)}</strong>
+                            <strong>${escapeHtml(projectPrimaryTarget(project))}</strong>
                             <div class="inline-url-row">
                               <p>${escapeHtml(projectUrl || 'No public URL is available yet')}</p>
                               ${projectUrl ? `<button type="button" class="secondary inline-copy-button" data-action="open-url" aria-label="Open public URL">
@@ -607,16 +683,21 @@ function syncEditorFromForm() {
   if (!projectForm) return;
 
   const shareModeValue = formValue(projectForm, 'shareMode') as ShareMode;
-  const validShareModes: ShareMode[] = ['quick'];
-  const shareMode = validShareModes.includes(shareModeValue) ? shareModeValue : 'quick';
+  const validShareModes: ShareMode[] = ['auto', 'quick', 'host-html'];
+  const shareMode = validShareModes.includes(shareModeValue) ? shareModeValue : 'auto';
   const projectPath = formValue(projectForm, 'projectPath');
-  const localHost = formValue(projectForm, 'localHost') || inferLocalHostFromPath(projectPath);
+  const localURL = formValue(projectForm, 'localURL');
+  const startCommand = formValue(projectForm, 'startCommand');
+  const shouldInferLocalHost = shareMode !== 'host-html' && !looksLikeURL(projectPath);
+  const localHost = formValue(projectForm, 'localHost') || (shouldInferLocalHost ? inferLocalHostFromPath(projectPath) : '');
 
   state.editorProject = {
     id: formValue(projectForm, 'id'),
     displayName: formValue(projectForm, 'displayName'),
     localHost,
     projectPath,
+    localURL,
+    startCommand,
     subdomain: formValue(projectForm, 'subdomain'),
     publicURL: state.editorProject.publicURL,
     shareMode,
@@ -682,7 +763,7 @@ function bindForms() {
     const target = event.target as HTMLInputElement | HTMLSelectElement | null;
     if (!target) return;
 
-    if (target.name === 'shareMode' || target.name === 'projectPath' || target.name === 'localHost') {
+    if (target.name === 'shareMode' || target.name === 'projectPath' || target.name === 'localHost' || target.name === 'localURL' || target.name === 'startCommand') {
       syncEditorFromForm();
       render();
     }
@@ -695,9 +776,11 @@ function bindForms() {
       displayName: formValue(projectForm, 'displayName'),
       localHost: formValue(projectForm, 'localHost'),
       projectPath: formValue(projectForm, 'projectPath'),
+      localURL: formValue(projectForm, 'localURL'),
+      startCommand: formValue(projectForm, 'startCommand'),
       subdomain: formValue(projectForm, 'subdomain'),
       publicURL: state.editorProject.publicURL,
-      shareMode: 'quick',
+      shareMode: state.editorProject.shareMode,
     };
     const next = await withAction('Saving project...', () => api.saveProject(payload));
     if (!next) return;
@@ -724,7 +807,6 @@ function bindForms() {
       state.activeProjectId = null;
     }
 
-    const shareMode = payload.shareMode;
     const shared = await withAction(
       'Creating Cloudflare tunnel URL...',
       () => {
@@ -809,7 +891,7 @@ async function handleAction(action: string, id: string | null) {
       if (typeof result === 'string' && result) {
         const inferredLocalHost = inferLocalHostFromPath(result);
         state.editorProject.projectPath = result;
-        if (!state.editorProject.localHost.trim()) {
+        if ((state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto') && !state.editorProject.localHost.trim()) {
           state.editorProject.localHost = inferredLocalHost;
         }
         render();

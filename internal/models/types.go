@@ -3,19 +3,23 @@ package models
 type ShareMode string
 
 const (
+	ShareModeAuto         ShareMode = "auto"
 	ShareModeStable       ShareMode = "stable"
 	ShareModeRandomDomain ShareMode = "random-domain"
 	ShareModeQuick        ShareMode = "quick"
+	ShareModeHostHTML     ShareMode = "host-html"
 )
 
 type ProjectPreset struct {
-	ID          string    `json:"id"`
-	DisplayName string    `json:"displayName"`
-	LocalHost   string    `json:"localHost"`
-	Subdomain   string    `json:"subdomain"`
-	PublicURL   string    `json:"publicURL"`
-	ProjectPath string    `json:"projectPath"`
-	ShareMode   ShareMode `json:"shareMode"`
+	ID           string    `json:"id"`
+	DisplayName  string    `json:"displayName"`
+	LocalHost    string    `json:"localHost"`
+	Subdomain    string    `json:"subdomain"`
+	PublicURL    string    `json:"publicURL"`
+	ProjectPath  string    `json:"projectPath"`
+	LocalURL     string    `json:"localURL"`
+	StartCommand string    `json:"startCommand"`
+	ShareMode    ShareMode `json:"shareMode"`
 }
 
 type AppSettings struct {
@@ -52,6 +56,7 @@ type TunnelStatus struct {
 	PID                     int        `json:"pid"`
 	ActiveURL               string     `json:"activeUrl"`
 	QuickURL                string     `json:"quickUrl"`
+	HTMLServerPort          int        `json:"htmlServerPort"`
 	ActiveHostnames         []string   `json:"activeHostnames"`
 	LastLogs                []LogEntry `json:"lastLogs"`
 	LastError               string     `json:"lastError"`

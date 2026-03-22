@@ -7,6 +7,8 @@ export namespace models {
 	    subdomain: string;
 	    publicURL: string;
 	    projectPath: string;
+	    localURL: string;
+	    startCommand: string;
 	    shareMode: string;
 	
 	    static createFrom(source: any = {}) {
@@ -21,6 +23,8 @@ export namespace models {
 	        this.subdomain = source["subdomain"];
 	        this.publicURL = source["publicURL"];
 	        this.projectPath = source["projectPath"];
+	        this.localURL = source["localURL"];
+	        this.startCommand = source["startCommand"];
 	        this.shareMode = source["shareMode"];
 	    }
 	}
@@ -116,6 +120,7 @@ export namespace models {
 	    pid: number;
 	    activeUrl: string;
 	    quickUrl: string;
+	    htmlServerPort: number;
 	    activeHostnames: string[];
 	    lastLogs: LogEntry[];
 	    lastError: string;
@@ -135,6 +140,7 @@ export namespace models {
 	        this.pid = source["pid"];
 	        this.activeUrl = source["activeUrl"];
 	        this.quickUrl = source["quickUrl"];
+	        this.htmlServerPort = source["htmlServerPort"];
 	        this.activeHostnames = source["activeHostnames"];
 	        this.lastLogs = this.convertValues(source["lastLogs"], LogEntry);
 	        this.lastError = source["lastError"];
