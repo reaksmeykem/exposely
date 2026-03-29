@@ -98,8 +98,12 @@ func runShareCommand(runner *cliRunner, args []string) error {
 		LocalURL:     strings.TrimSpace(*localURL),
 		StartCommand: strings.TrimSpace(*startCommand),
 	}
+	project, preparedMode, err := runner.applyShareDefaults(project, strings.TrimSpace(*modeValue))
+	if err != nil {
+		return err
+	}
 
-	mode, err := inferManualShareMode(strings.TrimSpace(*modeValue), project)
+	mode, err := inferManualShareMode(preparedMode, project)
 	if err != nil {
 		return err
 	}
@@ -179,10 +183,11 @@ Usage:
   exposely project edit --project "HR System" --url http://127.0.0.1:8000 --mode auto
   exposely project delete --project "HR System"
   exposely share --project <id-or-name>
+  exposely share
   exposely share --url http://127.0.0.1:5500
   exposely share --host app.test
-  exposely share --path D:\site --mode host-html
-  exposely share --path D:\app --mode auto --start "npm run dev -- --port 4173"
+  exposely share --mode host-html
+  exposely share --start "npm run dev -- --port 4173"
   exposely share --host app.test --mode stable --subdomain my-app
   exposely update
   exposely version
@@ -190,6 +195,7 @@ Usage:
 Notes:
   - "init" uses the current folder as the project path and folder name by default.
   - "project" manages saved presets in the same settings file used by the desktop app.
+  - "share" uses the current folder for obvious cases such as static HTML folders and start-command workflows.
   - "share" runs in the foreground and keeps the tunnel alive until Ctrl+C.
   - saved projects are loaded from the same settings file used by the desktop app.
   - quick, auto, and host-html modes create ephemeral public URLs.

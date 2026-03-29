@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -227,6 +228,43 @@ func (r *cliRunner) applyInitDefaults(project models.ProjectPreset) models.Proje
 		project.DisplayName = defaultProjectNameFromPath(project.ProjectPath)
 	}
 	return project
+}
+
+func (r *cliRunner) applyShareDefaults(project models.ProjectPreset, modeValue string) (models.ProjectPreset, string, error) {
+	modeValue = strings.TrimSpace(modeValue)
+	hasExplicitInput := strings.TrimSpace(project.DisplayName) != "" ||
+		strings.TrimSpace(project.LocalHost) != "" ||
+		strings.TrimSpace(project.LocalURL) != "" ||
+		strings.TrimSpace(project.ProjectPath) != "" ||
+		strings.TrimSpace(project.StartCommand) != "" ||
+		strings.TrimSpace(project.Subdomain) != "" ||
+		modeValue != ""
+
+	if strings.TrimSpace(project.ProjectPath) == "" && (strings.TrimSpace(project.StartCommand) != "" || strings.EqualFold(modeValue, string(models.ShareModeHostHTML))) {
+		project.ProjectPath = r.workDir
+	}
+
+	if !hasExplicitInput {
+		if info, err := os.Stat(r.workDir); err == nil && info.IsDir() {
+			if _, ok := detectCLIStaticSiteDir(r.workDir); ok {
+				project.ProjectPath = r.workDir
+				modeValue = string(models.ShareModeHostHTML)
+			}
+		}
+	}
+
+	if strings.TrimSpace(project.DisplayName) == "" && strings.TrimSpace(project.ProjectPath) != "" {
+		project.DisplayName = defaultProjectNameFromPath(project.ProjectPath)
+	}
+	if strings.TrimSpace(project.DisplayName) == "" {
+		project.DisplayName = defaultManualDisplayName(project)
+	}
+
+	if !hasExplicitInput && strings.TrimSpace(project.ProjectPath) == "" {
+		return project, modeValue, errors.New("share requires --host, --url, --start, --path, or a folder with index.html/dist/build/public in the current directory")
+	}
+
+	return project, modeValue, nil
 }
 
 func (r *cliRunner) createProject(project models.ProjectPreset) (models.ProjectPreset, error) {

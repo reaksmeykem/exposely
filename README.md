@@ -171,8 +171,11 @@ exposely project edit --project "hr-system" --url http://127.0.0.1:8000 --mode a
 exposely project delete --project "hr-system"
 exposely update
 exposely share --project my-site
+cd D:\code\landing-page
+exposely share
 exposely share --url http://127.0.0.1:5500
-exposely share --path D:\site --mode host-html
+cd D:\code\frontend
+exposely share --start "npm run dev -- --port 5173"
 ```
 
 `share` runs in the foreground and keeps the tunnel alive until you stop it with `Ctrl+C`.
@@ -222,6 +225,38 @@ If you need full control over the saved name or path, you can still use the expl
 
 ```powershell
 exposely project add --name "HR System" --path D:\code\hr-system --host hr-system.test --mode quick
+```
+
+### One-Shot Sharing Examples
+
+If you do not want to save a project first, you can also share directly from the current folder:
+
+Static HTML folder with `index.html`:
+
+```powershell
+cd D:\code\landing-page
+exposely share
+```
+
+Laravel with local host:
+
+```powershell
+cd D:\code\hr-system
+exposely share --host hr-system.test
+```
+
+Laravel with `php artisan serve` already running:
+
+```powershell
+cd D:\code\hr-system
+exposely share --url http://127.0.0.1:8000
+```
+
+Frontend app where Exposely should start the dev server:
+
+```powershell
+cd D:\code\frontend
+exposely share --start "npm run dev -- --port 5173"
 ```
 
 ## How It Works

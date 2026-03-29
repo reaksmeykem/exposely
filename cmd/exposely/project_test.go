@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/reaksmeykem/exposely/internal/models"
@@ -99,5 +101,47 @@ func TestApplyInitDefaultsPreservesExplicitValues(t *testing.T) {
 	}
 	if project.DisplayName != "HR System" {
 		t.Fatalf("expected explicit display name to be preserved, got %q", project.DisplayName)
+	}
+}
+
+func TestApplyShareDefaultsUsesCwdForStartCommand(t *testing.T) {
+	runner := &cliRunner{workDir: `D:\code\frontend`}
+	project, mode, err := runner.applyShareDefaults(models.ProjectPreset{
+		StartCommand: "npm run dev -- --port 5173",
+	}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if project.ProjectPath != `D:\code\frontend` {
+		t.Fatalf("expected cwd path, got %q", project.ProjectPath)
+	}
+	if project.DisplayName != "frontend" {
+		t.Fatalf("expected cwd folder name, got %q", project.DisplayName)
+	}
+	if mode != "" {
+		t.Fatalf("expected mode to stay empty for inference, got %q", mode)
+	}
+}
+
+func TestApplyShareDefaultsDetectsHtmlFolderFromCwd(t *testing.T) {
+	workDir := t.TempDir()
+	indexPath := filepath.Join(workDir, "index.html")
+	if err := os.WriteFile(indexPath, []byte("<html></html>"), 0o644); err != nil {
+		t.Fatalf("failed to write index.html: %v", err)
+	}
+
+	runner := &cliRunner{workDir: workDir}
+	project, mode, err := runner.applyShareDefaults(models.ProjectPreset{}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if project.ProjectPath != workDir {
+		t.Fatalf("expected cwd path, got %q", project.ProjectPath)
+	}
+	if mode != string(models.ShareModeHostHTML) {
+		t.Fatalf("expected host-html mode, got %q", mode)
+	}
+	if project.DisplayName != filepath.Base(workDir) {
+		t.Fatalf("expected folder name, got %q", project.DisplayName)
 	}
 }
