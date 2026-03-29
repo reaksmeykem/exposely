@@ -166,3 +166,21 @@ func TestBuildWindowsStartProcessScriptQuotesPath(t *testing.T) {
 		t.Fatalf("expected quoted installer path, got %q", script)
 	}
 }
+
+func TestProjectPublicURLSkipsEphemeralModes(t *testing.T) {
+	app := &App{}
+
+	for _, mode := range []models.ShareMode{
+		models.ShareModeAuto,
+		models.ShareModeQuick,
+		models.ShareModeHostHTML,
+	} {
+		got := app.projectPublicURL(models.ProjectPreset{
+			ShareMode: mode,
+			PublicURL: "https://expired.trycloudflare.com",
+		}, "example.com")
+		if got != "" {
+			t.Fatalf("expected empty URL for mode %q, got %q", mode, got)
+		}
+	}
+}

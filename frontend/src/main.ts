@@ -83,16 +83,25 @@ function formatProjectURL(project: ProjectPreset, domain: string): string {
   return '';
 }
 
+function usesEphemeralURL(project: ProjectPreset): boolean {
+  return project.shareMode === 'auto' || project.shareMode === 'quick' || project.shareMode === 'host-html';
+}
+
 function isMeaningfulDomain(domain: string): boolean {
   const normalized = domain.trim().toLowerCase();
   return normalized !== '' && normalized !== 'example.com';
 }
 
 function resolvedProjectURL(project: ProjectPreset, appState: AppState): string {
-  const liveUrl = state.activeProjectId === project.id
+  const isActiveProject = state.activeProjectId === project.id;
+  const liveUrl = isActiveProject
     ? (appState.status.activeUrl || appState.status.quickUrl || '').trim()
     : '';
   if (liveUrl) return liveUrl;
+
+  if (usesEphemeralURL(project)) {
+    return '';
+  }
 
   const cachedUrl = state.projectUrls[project.id]?.trim() || '';
   if (cachedUrl) return cachedUrl;
@@ -167,6 +176,10 @@ function selectedProject(): ProjectPreset | null {
 
 function syncProjectUrlsFromState(appState: AppState) {
   for (const project of appState.settings.projects) {
+    if (usesEphemeralURL(project)) {
+      delete state.projectUrls[project.id];
+      continue;
+    }
     if (project.publicURL?.trim()) {
       state.projectUrls[project.id] = project.publicURL.trim();
     }
@@ -1136,6 +1149,7 @@ async function handleAction(action: string, id: string | null) {
       if (next) {
         state.appState = next;
         state.activeProjectId = id!;
+        delete state.projectUrls[id!];
         if (next.status.activeUrl || next.status.quickUrl) {
           state.projectUrls[id!] = next.status.activeUrl || next.status.quickUrl;
         }
@@ -1158,21 +1172,16 @@ async function handleAction(action: string, id: string | null) {
         'Generating new Cloudflare tunnel URL...',
         () => api.startQuickTunnel(project.id),
       );
-      if (next) {
-        state.appState = next;
-        state.activeProjectId = project.id;
-        if (next.status.activeUrl || next.status.quickUrl) {
-          state.projectUrls[project.id] = next.status.activeUrl || next.status.quickUrl;
-        }
-        if (next.settings.projects) {
-          const savedProject = next.settings.projects.find((item) => item.id === project.id);
-          if (savedProject?.publicURL) {
-            state.projectUrls[project.id] = savedProject.publicURL;
+        if (next) {
+          state.appState = next;
+          state.activeProjectId = project.id;
+          delete state.projectUrls[project.id];
+          if (next.status.activeUrl || next.status.quickUrl) {
+            state.projectUrls[project.id] = next.status.activeUrl || next.status.quickUrl;
           }
+          setNotice('success', 'New public URL generated');
         }
-        setNotice('success', 'New public URL generated');
-      }
-      return;
+        return;
     }
     case 'open-url':
       await withAction('Opening public URL...', () => api.openPublicURL(id!));

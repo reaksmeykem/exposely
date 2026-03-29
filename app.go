@@ -1041,12 +1041,15 @@ func (a *App) OpenPublicURL(projectID string) error {
 	if err != nil {
 		return err
 	}
-	target := strings.TrimSpace(project.PublicURL)
-	if target == "" {
-		switch normalizeShareMode(project.ShareMode) {
-		case models.ShareModeAuto, models.ShareModeQuick, models.ShareModeHostHTML:
-			target = strings.TrimSpace(a.manager.Status().ActiveURL)
+	target := ""
+	switch normalizeShareMode(project.ShareMode) {
+	case models.ShareModeAuto, models.ShareModeQuick, models.ShareModeHostHTML:
+		target = strings.TrimSpace(a.manager.Status().ActiveURL)
+		if target == "" {
+			target = strings.TrimSpace(a.manager.Status().QuickURL)
 		}
+	default:
+		target = strings.TrimSpace(project.PublicURL)
 	}
 	if target == "" {
 		target = a.projectPublicURL(project, settingsValue.DefaultDomain)
@@ -1340,7 +1343,11 @@ func (a *App) normalizeSettings(input models.AppSettings) models.AppSettings {
 		output.Projects[i].LocalURL = strings.TrimSpace(output.Projects[i].LocalURL)
 		output.Projects[i].StartCommand = strings.TrimSpace(output.Projects[i].StartCommand)
 		output.Projects[i].ShareMode = normalizeShareMode(output.Projects[i].ShareMode)
-		if strings.TrimSpace(output.Projects[i].PublicURL) == "" {
+		if normalizeShareMode(output.Projects[i].ShareMode) == models.ShareModeAuto ||
+			normalizeShareMode(output.Projects[i].ShareMode) == models.ShareModeQuick ||
+			normalizeShareMode(output.Projects[i].ShareMode) == models.ShareModeHostHTML {
+			output.Projects[i].PublicURL = ""
+		} else if strings.TrimSpace(output.Projects[i].PublicURL) == "" {
 			output.Projects[i].PublicURL = a.projectPublicURL(output.Projects[i], output.DefaultDomain)
 		}
 	}
@@ -1396,7 +1403,7 @@ func (a *App) isAdminLicensed() bool {
 func (a *App) projectPublicURL(project models.ProjectPreset, domain string) string {
 	switch normalizeShareMode(project.ShareMode) {
 	case models.ShareModeAuto, models.ShareModeQuick, models.ShareModeHostHTML:
-		return strings.TrimSpace(project.PublicURL)
+		return ""
 	case models.ShareModeRandomDomain:
 		return strings.TrimSpace(project.PublicURL)
 	default:
@@ -1425,7 +1432,10 @@ func (a *App) resolveHostname(project models.ProjectPreset, domain string, useRa
 func (a *App) updateProjectShare(settingsValue models.AppSettings, projectID, subdomain, fullURL string) models.AppSettings {
 	for i := range settingsValue.Projects {
 		if settingsValue.Projects[i].ID == projectID {
-			settingsValue.Projects[i].PublicURL = fullURL
+			if normalizeShareMode(settingsValue.Projects[i].ShareMode) == models.ShareModeStable ||
+				normalizeShareMode(settingsValue.Projects[i].ShareMode) == models.ShareModeRandomDomain {
+				settingsValue.Projects[i].PublicURL = fullURL
+			}
 			if normalizeShareMode(settingsValue.Projects[i].ShareMode) == models.ShareModeStable {
 				settingsValue.Projects[i].Subdomain = subdomain
 			}
