@@ -14,7 +14,7 @@
     !define INFO_PRODUCTNAME "Exposely"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "1.0.18"
+    !define INFO_PRODUCTVERSION "1.0.19"
 !endif
 !ifndef INFO_COPYRIGHT
     !define INFO_COPYRIGHT "Copyright 2026"

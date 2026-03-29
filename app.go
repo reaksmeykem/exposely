@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1661,9 +1662,24 @@ func (a *App) downloadReleaseAsset(versionTag string, asset githubReleaseAsset) 
 }
 
 func launchExecutable(path string) error {
+	if runtime.GOOS == "windows" {
+		script := buildWindowsStartProcessScript(path)
+		cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+		cmd.Dir = filepath.Dir(path)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+		return cmd.Start()
+	}
+
 	cmd := exec.Command(path)
 	cmd.Dir = filepath.Dir(path)
 	return cmd.Start()
+}
+
+func buildWindowsStartProcessScript(path string) string {
+	return fmt.Sprintf("Start-Process -FilePath %s", strconv.Quote(path))
 }
 
 func (a *App) currentUpdateInfo() models.UpdateInfo {

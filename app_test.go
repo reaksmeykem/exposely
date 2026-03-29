@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/reaksmeykem/exposely/internal/models"
@@ -152,5 +153,16 @@ func TestSelectDesktopUpdateAssetFallsBackToPortableExe(t *testing.T) {
 	}
 	if asset.Name != "Exposely.exe" {
 		t.Fatalf("expected portable desktop exe fallback, got %q", asset.Name)
+	}
+}
+
+func TestBuildWindowsStartProcessScriptQuotesPath(t *testing.T) {
+	script := buildWindowsStartProcessScript(`C:\Users\User\AppData\Local\Temp\Exposely Updates\1.0.19-Exposely-amd64-installer.exe`)
+
+	if !strings.Contains(script, "Start-Process -FilePath") {
+		t.Fatalf("expected Start-Process invocation, got %q", script)
+	}
+	if !strings.Contains(script, `"C:\\Users\\User\\AppData\\Local\\Temp\\Exposely Updates\\1.0.19-Exposely-amd64-installer.exe"`) {
+		t.Fatalf("expected quoted installer path, got %q", script)
 	}
 }
