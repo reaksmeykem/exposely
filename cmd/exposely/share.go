@@ -211,7 +211,7 @@ func (r *cliRunner) shareProjectThroughNamedTunnel(settingsValue models.AppSetti
 		return err
 	}
 
-	fmt.Printf("Public URL: %s\n", fullURL)
+	r.printPublicURL(fullURL)
 	return r.waitUntilInterrupted()
 }
 
@@ -313,7 +313,7 @@ func (r *cliRunner) waitUntilInterrupted() error {
 		}
 	}()
 
-	fmt.Println("Tunnel is running. Press Ctrl+C to stop.")
+	fmt.Println(r.colorize("Tunnel is running. Press Ctrl+C to stop.", "1;32"))
 
 	select {
 	case <-signalCh:

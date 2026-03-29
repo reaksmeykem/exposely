@@ -26,6 +26,7 @@ import (
 )
 
 var cliLocalServiceURLPattern = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(?:/[^\s"'<>]*)?`)
+var cliAnyURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 
 type cliRunner struct {
 	store      *settings.Store
@@ -39,6 +40,7 @@ type cliRunner struct {
 	projectCmd *exec.Cmd
 
 	lastQuickURL string
+	useColor     bool
 }
 
 func newCLIRunner() (*cliRunner, error) {
@@ -62,6 +64,7 @@ func newCLIRunner() (*cliRunner, error) {
 		homeDir:    homeDir,
 		appDataDir: filepath.Dir(store.Path()),
 		workDir:    workDir,
+		useColor:   cliSupportsColor(),
 	}
 	runner.manager = cloudflare.NewManager(
 		runner.configPath,
@@ -108,8 +111,36 @@ func (r *cliRunner) printProjects() error {
 		return nil
 	}
 
+	idWidth := len("ID")
+	nameWidth := len("NAME")
+	typeWidth := len("TYPE")
+	targetWidth := len("TARGET")
+
+	rows := make([][4]string, 0, len(settingsValue.Projects))
 	for _, project := range settingsValue.Projects {
-		fmt.Printf("%s\t%s\t%s\n", project.ID, project.DisplayName, r.projectSummary(project))
+		projectType, target := r.projectRow(project)
+		row := [4]string{project.ID, project.DisplayName, projectType, target}
+		rows = append(rows, row)
+		if len(row[0]) > idWidth {
+			idWidth = len(row[0])
+		}
+		if len(row[1]) > nameWidth {
+			nameWidth = len(row[1])
+		}
+		if len(row[2]) > typeWidth {
+			typeWidth = len(row[2])
+		}
+		if len(row[3]) > targetWidth {
+			targetWidth = len(row[3])
+		}
+	}
+
+	headerFmt := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds\n", idWidth, nameWidth, typeWidth, targetWidth)
+	rowFmt := headerFmt
+	fmt.Printf(headerFmt, r.colorize("ID", "1;37"), r.colorize("NAME", "1;37"), r.colorize("TYPE", "1;37"), r.colorize("TARGET", "1;37"))
+	fmt.Println(strings.Repeat("-", idWidth+nameWidth+typeWidth+targetWidth+6))
+	for _, row := range rows {
+		fmt.Printf(rowFmt, row[0], row[1], r.styleProjectType(row[2]), r.highlightURLs(row[3]))
 	}
 	return nil
 }
@@ -126,11 +157,12 @@ func (r *cliRunner) handleStatus(status models.TunnelStatus) {
 		return
 	}
 	r.lastQuickURL = status.ActiveURL
-	fmt.Printf("Public URL: %s\n", status.ActiveURL)
+	r.printPublicURL(status.ActiveURL)
 }
 
 func (r *cliRunner) printLog(source, level, message string) {
-	fmt.Fprintf(os.Stderr, "%s [%s] %s\n", strings.ToUpper(level), source, message)
+	prefix := fmt.Sprintf("%-7s [%s]", strings.ToUpper(strings.TrimSpace(level)), strings.TrimSpace(source))
+	fmt.Fprintf(os.Stderr, "%s %s\n", r.styleLogPrefix(prefix, level), r.highlightURLs(message))
 }
 
 func (r *cliRunner) detectCloudflaredPath(configuredPath string) (string, error) {
@@ -196,29 +228,34 @@ func (r *cliRunner) normalizeProject(project models.ProjectPreset) models.Projec
 }
 
 func (r *cliRunner) projectSummary(project models.ProjectPreset) string {
+	projectType, target := r.projectRow(project)
+	return projectType + " -> " + target
+}
+
+func (r *cliRunner) projectRow(project models.ProjectPreset) (string, string) {
 	switch normalizeCLIShareMode(project.ShareMode) {
 	case models.ShareModeHostHTML:
 		if project.LocalURL != "" {
-			return "HTML URL -> " + project.LocalURL
+			return "HTML", project.LocalURL
 		}
-		return "HTML folder -> " + project.ProjectPath
+		return "HTML", project.ProjectPath
 	case models.ShareModeAuto:
 		switch {
 		case project.LocalURL != "":
-			return "Auto URL -> " + project.LocalURL
+			return "AUTO", project.LocalURL
 		case project.StartCommand != "":
-			return "Auto start -> " + project.StartCommand
+			return "AUTO", project.StartCommand
 		case project.LocalHost != "":
-			return "Auto host -> " + project.LocalHost
+			return "AUTO", project.LocalHost
 		default:
-			return "Auto path -> " + project.ProjectPath
+			return "AUTO", project.ProjectPath
 		}
 	case models.ShareModeStable:
-		return "Stable -> " + project.Subdomain
+		return "STABLE", project.Subdomain
 	case models.ShareModeRandomDomain:
-		return "Random domain"
+		return "RANDOM", "generated subdomain"
 	default:
-		return "Local host -> " + project.LocalHost
+		return "HOST", project.LocalHost
 	}
 }
 
@@ -554,4 +591,76 @@ func randomCLISubdomain() string {
 		return fmt.Sprintf("share-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(bytes)
+}
+
+func cliSupportsColor() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if runtime.GOOS != "windows" && strings.EqualFold(os.Getenv("TERM"), "dumb") {
+		return false
+	}
+	return true
+}
+
+func (r *cliRunner) colorize(text, code string) string {
+	if !r.useColor || strings.TrimSpace(text) == "" {
+		return text
+	}
+	return "\x1b[" + code + "m" + text + "\x1b[0m"
+}
+
+func (r *cliRunner) styleLogPrefix(prefix, level string) string {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "success":
+		return r.colorize(prefix, "1;32")
+	case "error":
+		return r.colorize(prefix, "1;31")
+	case "warning", "warn":
+		return r.colorize(prefix, "1;33")
+	default:
+		return r.colorize(prefix, "1;36")
+	}
+}
+
+func (r *cliRunner) highlightURLs(message string) string {
+	if !r.useColor || strings.TrimSpace(message) == "" {
+		return message
+	}
+	return cliAnyURLPattern.ReplaceAllStringFunc(message, func(match string) string {
+		return r.colorize(match, "1;96;4")
+	})
+}
+
+func (r *cliRunner) printPublicURL(rawURL string) {
+	label := "PUBLIC URL"
+	if r.useColor {
+		label = r.colorize(label, "1;30;42")
+		rawURL = r.colorize(rawURL, "1;96;4")
+	}
+	fmt.Printf("\n%s %s\n\n", label, rawURL)
+}
+
+func (r *cliRunner) styleProjectType(projectType string) string {
+	switch strings.ToUpper(strings.TrimSpace(projectType)) {
+	case "HOST":
+		return r.colorize(projectType, "1;34")
+	case "HTML":
+		return r.colorize(projectType, "1;35")
+	case "AUTO":
+		return r.colorize(projectType, "1;36")
+	case "STABLE":
+		return r.colorize(projectType, "1;32")
+	case "RANDOM":
+		return r.colorize(projectType, "1;33")
+	default:
+		return projectType
+	}
 }
