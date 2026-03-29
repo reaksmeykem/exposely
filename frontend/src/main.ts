@@ -743,7 +743,7 @@ function syncEditorFromForm() {
   const projectPath = formValue(projectForm, 'projectPath');
   const localURL = formValue(projectForm, 'localURL');
   const startCommand = formValue(projectForm, 'startCommand');
-  const shouldInferLocalHost = shareMode !== 'host-html' && !looksLikeURL(projectPath);
+  const shouldInferLocalHost = shareMode === 'quick' && !looksLikeURL(projectPath);
   const localHost = formValue(projectForm, 'localHost') || (shouldInferLocalHost ? inferLocalHostFromPath(projectPath) : '');
 
   state.editorProject = {
@@ -946,7 +946,7 @@ async function handleAction(action: string, id: string | null) {
       if (typeof result === 'string' && result) {
         const inferredLocalHost = inferLocalHostFromPath(result);
         state.editorProject.projectPath = result;
-        if ((state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto') && !state.editorProject.localHost.trim()) {
+        if (state.editorProject.shareMode === 'quick' && !state.editorProject.localHost.trim()) {
           state.editorProject.localHost = inferredLocalHost;
         }
         render();
