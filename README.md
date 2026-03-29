@@ -155,25 +155,18 @@ Or build it locally with:
 go build -o build/bin/exposely-cli.exe ./cmd/exposely
 ```
 
-Examples:
+Recommended quick start:
 
 ```powershell
-exposely status
-exposely projects
 cd D:\code\hr-system
-exposely init --host hr-system.test
+exposely share --host hr-system.test
+
 cd D:\code\hr-system
-exposely init --url http://127.0.0.1:8000
-cd D:\code\frontend
-exposely init --start "npm run dev -- --port 5173"
-exposely project list
-exposely project edit --project "hr-system" --url http://127.0.0.1:8000 --mode auto
-exposely project delete --project "hr-system"
-exposely update
-exposely share --project my-site
+exposely share --url http://127.0.0.1:8000
+
 cd D:\code\landing-page
 exposely share
-exposely share --url http://127.0.0.1:5500
+
 cd D:\code\frontend
 exposely share --start "npm run dev -- --port 5173"
 ```
@@ -182,9 +175,52 @@ exposely share --start "npm run dev -- --port 5173"
 
 `update` downloads the latest CLI release from GitHub and replaces the current executable on Windows.
 
+Other useful commands:
+
+```powershell
+exposely status
+exposely projects
+exposely project list
+exposely project edit --project "hr-system" --url http://127.0.0.1:8000 --mode auto
+exposely project delete --project "hr-system"
+exposely update
+```
+
+### One-Shot Sharing Examples
+
+If you do not want to save a project first, you can also share directly from the current folder:
+
+Static HTML folder with `index.html`:
+
+```powershell
+cd D:\code\landing-page
+exposely share
+```
+
+Laravel with local host:
+
+```powershell
+cd D:\code\hr-system
+exposely share --host hr-system.test
+```
+
+Laravel with `php artisan serve` already running:
+
+```powershell
+cd D:\code\hr-system
+exposely share --url http://127.0.0.1:8000
+```
+
+Frontend app where Exposely should start the dev server:
+
+```powershell
+cd D:\code\frontend
+exposely share --start "npm run dev -- --port 5173"
+```
+
 ### Saved Project Examples
 
-`init` uses the current folder as the default project path and folder name, so it is the easiest way to add a saved project from the terminal.
+If you want to save a project preset for reuse later, use `init` from inside the project folder. `init` uses the current folder as the default project path and folder name.
 
 Laravel with Herd, Valet, Nginx, Apache, Caddy, or another local host:
 
@@ -221,42 +257,16 @@ cd D:\code\frontend
 exposely init --start "npm run dev -- --port 5173"
 ```
 
+Then reuse the saved project with:
+
+```powershell
+exposely share --project hr-system
+```
+
 If you need full control over the saved name or path, you can still use the explicit command:
 
 ```powershell
 exposely project add --name "HR System" --path D:\code\hr-system --host hr-system.test --mode quick
-```
-
-### One-Shot Sharing Examples
-
-If you do not want to save a project first, you can also share directly from the current folder:
-
-Static HTML folder with `index.html`:
-
-```powershell
-cd D:\code\landing-page
-exposely share
-```
-
-Laravel with local host:
-
-```powershell
-cd D:\code\hr-system
-exposely share --host hr-system.test
-```
-
-Laravel with `php artisan serve` already running:
-
-```powershell
-cd D:\code\hr-system
-exposely share --url http://127.0.0.1:8000
-```
-
-Frontend app where Exposely should start the dev server:
-
-```powershell
-cd D:\code\frontend
-exposely share --start "npm run dev -- --port 5173"
 ```
 
 ## How It Works
