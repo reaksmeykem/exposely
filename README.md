@@ -160,6 +160,11 @@ Examples:
 ```powershell
 exposely status
 exposely projects
+exposely project list
+exposely project add --name "My HTML" --url http://127.0.0.1:5500
+exposely project add --name "HR System" --host hr-system.test --mode quick
+exposely project edit --project "HR System" --url http://127.0.0.1:8000 --mode auto
+exposely project delete --project "HR System"
 exposely update
 exposely share --project my-site
 exposely share --url http://127.0.0.1:5500
@@ -169,6 +174,38 @@ exposely share --path D:\site --mode host-html
 `share` runs in the foreground and keeps the tunnel alive until you stop it with `Ctrl+C`.
 
 `update` downloads the latest CLI release from GitHub and replaces the current executable on Windows.
+
+### Saved Project Examples
+
+Laravel with Herd, Valet, Nginx, Apache, Caddy, or another local host:
+
+```powershell
+exposely project add --name "HR System" --host hr-system.test --mode quick
+```
+
+Laravel with `php artisan serve`:
+
+```powershell
+exposely project add --name "HR System" --url http://127.0.0.1:8000 --mode auto
+```
+
+Laravel where Exposely should start the local server:
+
+```powershell
+exposely project add --name "HR System" --path D:\code\hr-system --start "php artisan serve --host=127.0.0.1 --port=8000" --mode auto
+```
+
+Static HTML or Live Server:
+
+```powershell
+exposely project add --name "Landing Page" --url http://127.0.0.1:5500 --mode host-html
+```
+
+Vite, Tailwind, React, Vue, or another frontend dev server:
+
+```powershell
+exposely project add --name "Frontend App" --path D:\code\frontend --start "npm run dev -- --port 5173" --mode auto
+```
 
 ## How It Works
 

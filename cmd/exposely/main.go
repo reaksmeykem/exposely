@@ -43,6 +43,10 @@ func main() {
 		if err := runner.printProjects(); err != nil {
 			exitWithError(err)
 		}
+	case "project":
+		if err := runProjectCommand(runner, args); err != nil {
+			exitWithError(err)
+		}
 	case "update", "upgrade", "self-update":
 		if err := runner.selfUpdate(); err != nil {
 			exitWithError(err)
@@ -162,6 +166,11 @@ func printCLIUsage() {
 Usage:
   exposely status
   exposely projects
+  exposely project list
+  exposely project add --name "My App" --url http://127.0.0.1:5500
+  exposely project add --name "HR System" --host hr-system.test --mode quick
+  exposely project edit --project "HR System" --url http://127.0.0.1:8000 --mode auto
+  exposely project delete --project "HR System"
   exposely share --project <id-or-name>
   exposely share --url http://127.0.0.1:5500
   exposely share --host app.test
@@ -172,6 +181,7 @@ Usage:
   exposely version
 
 Notes:
+  - "project" manages saved presets in the same settings file used by the desktop app.
   - "share" runs in the foreground and keeps the tunnel alive until Ctrl+C.
   - saved projects are loaded from the same settings file used by the desktop app.
   - quick, auto, and host-html modes create ephemeral public URLs.
