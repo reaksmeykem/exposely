@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ import (
 	applicense "github.com/reaksmeykem/exposely/internal/license"
 	"github.com/reaksmeykem/exposely/internal/models"
 	"github.com/reaksmeykem/exposely/internal/settings"
+	"github.com/reaksmeykem/exposely/internal/version"
 )
 
 const embeddedLicensePublicKey = ""
@@ -47,6 +49,8 @@ type App struct {
 	projectMu   sync.Mutex
 	projectCmd  *exec.Cmd
 	lastStateMu sync.Mutex
+	updateMu    sync.RWMutex
+	updateInfo  models.UpdateInfo
 }
 
 func NewApp() (*App, error) {
@@ -129,6 +133,7 @@ func (a *App) RefreshState() (models.AppState, error) {
 		Settings:               settingsValue,
 		Status:                 status,
 		License:                licenseState,
+		Update:                 a.currentUpdateInfo(),
 		ConfigPath:             a.configPath,
 		SettingsPath:           a.store.Path(),
 		HomeDir:                a.homeDir,
@@ -139,8 +144,46 @@ func (a *App) RefreshState() (models.AppState, error) {
 		ConfigReadError:        errorString(cfgErr),
 		BuildRunning:           a.isBuildRunning(),
 		BuildCommandDetected:   a.detectNpmCommand() != "",
-		ProductVersion:         "1.0.7",
+		ProductVersion:         version.Version,
 	}, nil
+}
+
+func (a *App) CheckForUpdates() (models.AppState, error) {
+	info := models.UpdateInfo{
+		Checked:        true,
+		Available:      false,
+		CurrentVersion: version.Version,
+		LatestVersion:  version.Version,
+		ReleaseURL:     version.ReleasePageURL,
+	}
+
+	latest, err := fetchLatestReleaseInfo()
+	if err != nil {
+		info.Message = "Could not check for updates right now."
+		a.setUpdateInfo(info)
+		return a.RefreshState()
+	}
+
+	info.LatestVersion = latest.TagName
+	info.ReleaseURL = latest.HTMLURL
+	if isVersionNewer(version.Version, latest.TagName) {
+		info.Available = true
+		info.Message = fmt.Sprintf("Exposely %s is available.", latest.TagName)
+	} else {
+		info.Message = "You are using the latest version."
+	}
+
+	a.setUpdateInfo(info)
+	return a.RefreshState()
+}
+
+func (a *App) OpenLatestRelease() error {
+	info := a.currentUpdateInfo()
+	target := strings.TrimSpace(info.ReleaseURL)
+	if target == "" {
+		target = version.ReleasePageURL
+	}
+	return openExternal(target)
 }
 
 func (a *App) SaveSettings(input models.AppSettings) (models.AppState, error) {
@@ -1450,6 +1493,108 @@ func openExternal(target string) error {
 		}
 	}
 	return cmd.Start()
+}
+
+type githubLatestRelease struct {
+	TagName string `json:"tag_name"`
+	HTMLURL string `json:"html_url"`
+}
+
+func fetchLatestReleaseInfo() (githubLatestRelease, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+version.RepoOwner+"/"+version.RepoName+"/releases/latest", nil)
+	if err != nil {
+		return githubLatestRelease{}, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "exposely-ui/"+version.Version)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return githubLatestRelease{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return githubLatestRelease{}, fmt.Errorf("GitHub responded with HTTP %d", resp.StatusCode)
+	}
+
+	var release githubLatestRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return githubLatestRelease{}, err
+	}
+	return release, nil
+}
+
+func (a *App) currentUpdateInfo() models.UpdateInfo {
+	a.updateMu.RLock()
+	defer a.updateMu.RUnlock()
+	if a.updateInfo.CurrentVersion == "" {
+		return models.UpdateInfo{
+			CurrentVersion: version.Version,
+			LatestVersion:  version.Version,
+			ReleaseURL:     version.ReleasePageURL,
+		}
+	}
+	return a.updateInfo
+}
+
+func (a *App) setUpdateInfo(info models.UpdateInfo) {
+	if strings.TrimSpace(info.CurrentVersion) == "" {
+		info.CurrentVersion = version.Version
+	}
+	if strings.TrimSpace(info.ReleaseURL) == "" {
+		info.ReleaseURL = version.ReleasePageURL
+	}
+	a.updateMu.Lock()
+	a.updateInfo = info
+	a.updateMu.Unlock()
+}
+
+func isVersionNewer(current, latest string) bool {
+	currentParts := parseVersionParts(current)
+	latestParts := parseVersionParts(latest)
+	maxLen := len(currentParts)
+	if len(latestParts) > maxLen {
+		maxLen = len(latestParts)
+	}
+	for i := 0; i < maxLen; i++ {
+		currentPart := 0
+		latestPart := 0
+		if i < len(currentParts) {
+			currentPart = currentParts[i]
+		}
+		if i < len(latestParts) {
+			latestPart = latestParts[i]
+		}
+		if latestPart > currentPart {
+			return true
+		}
+		if latestPart < currentPart {
+			return false
+		}
+	}
+	return false
+}
+
+func parseVersionParts(raw string) []int {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(raw), "v"))
+	if trimmed == "" {
+		return nil
+	}
+	fields := strings.Split(trimmed, ".")
+	parts := make([]int, 0, len(fields))
+	for _, field := range fields {
+		value := 0
+		for _, ch := range field {
+			if ch < '0' || ch > '9' {
+				break
+			}
+			value = value*10 + int(ch-'0')
+		}
+		parts = append(parts, value)
+	}
+	return parts
 }
 
 func errorString(err error) string {

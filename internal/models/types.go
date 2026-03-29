@@ -68,6 +68,7 @@ type AppState struct {
 	Settings               AppSettings  `json:"settings"`
 	Status                 TunnelStatus `json:"status"`
 	License                LicenseState `json:"license"`
+	Update                 UpdateInfo   `json:"update"`
 	ConfigPath             string       `json:"configPath"`
 	SettingsPath           string       `json:"settingsPath"`
 	HomeDir                string       `json:"homeDir"`
@@ -79,6 +80,15 @@ type AppState struct {
 	BuildRunning           bool         `json:"buildRunning"`
 	BuildCommandDetected   bool         `json:"buildCommandDetected"`
 	ProductVersion         string       `json:"productVersion"`
+}
+
+type UpdateInfo struct {
+	Checked        bool   `json:"checked"`
+	Available      bool   `json:"available"`
+	CurrentVersion string `json:"currentVersion"`
+	LatestVersion  string `json:"latestVersion"`
+	ReleaseURL     string `json:"releaseUrl"`
+	Message        string `json:"message"`
 }
 
 type LicenseState struct {

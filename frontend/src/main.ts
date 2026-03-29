@@ -223,6 +223,29 @@ function statusTone(status: TunnelStatus): string {
   return 'idle';
 }
 
+function displayVersionLabel(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  return trimmed.startsWith('v') ? trimmed : `v${trimmed}`;
+}
+
+function updateBanner(appState: AppState): string {
+  const update = appState.update;
+  if (!update.available) return '';
+  return `
+    <section class="install-banner" data-action="tab-about">
+      <div class="install-banner-copy">
+        <span class="install-banner-label">Update available</span>
+        <strong>Exposely ${escapeHtml(displayVersionLabel(update.latestVersion))} is ready</strong>
+        <p>${escapeHtml(update.message || `You are using v${update.currentVersion}.`)}</p>
+      </div>
+      <div class="install-banner-action">
+        <button type="button" data-action="open-latest-release">Open Release</button>
+      </div>
+    </section>
+  `;
+}
+
 function logRows(logs: LogEntry[]): string {
   return logs
     .slice(-12)
@@ -399,6 +422,7 @@ function render() {
             </div>
           </section>
         ` : ''}
+        ${updateBanner(appState)}
 
         <header class="content-header">
           <div class="header-info">
@@ -654,11 +678,22 @@ function render() {
                     <div class="metric-grid">
                       <div class="metric-card">
                          <span class="summary-label">Version</span>
-                         <strong>v${escapeHtml(appState.productVersion)}</strong>
+                         <strong>${escapeHtml(displayVersionLabel(appState.productVersion))}</strong>
                       </div>
                       <div class="metric-card">
                          <span class="summary-label">Platform</span>
                          <strong>Windows</strong>
+                      </div>
+                    </div>
+                    <div class="metric-grid" style="margin-top: 20px;">
+                      <div class="metric-card">
+                        <span class="summary-label">Updates</span>
+                        <strong>${escapeHtml(appState.update.available ? `${displayVersionLabel(appState.update.latestVersion)} available` : appState.update.checked ? 'Up to date' : 'Checking in background')}</strong>
+                        <p style="margin-top: 10px; color: var(--text-secondary);">${escapeHtml(appState.update.message || 'The app can check GitHub releases for new versions.')}</p>
+                        <div class="action-row" style="margin-top: 14px;">
+                          <button type="button" class="secondary" data-action="check-updates">Check Now</button>
+                          <button type="button" ${appState.update.releaseUrl ? '' : 'disabled'} data-action="open-latest-release">Open Release</button>
+                        </div>
                       </div>
                     </div>
                     <div style="padding: 24px; color: var(--text-secondary); line-height: 1.6;">
@@ -1016,6 +1051,17 @@ async function handleAction(action: string, id: string | null) {
     case 'open-settings':
       await withAction('Opening settings file...', () => api.openSettingsFile());
       return;
+    case 'open-latest-release':
+      await withAction('Opening latest release...', () => api.openLatestRelease());
+      return;
+    case 'check-updates': {
+      const next = await withAction('Checking for updates...', () => api.checkForUpdates());
+      if (next) {
+        state.appState = next;
+        setNotice(next.update.available ? 'info' : 'success', next.update.message || 'Update check finished');
+      }
+      return;
+    }
     case 'refresh': {
       const next = await withAction('Refreshing state...', () => api.refreshState());
       if (next) {
@@ -1195,6 +1241,17 @@ async function bootstrap() {
   state.selectedProjectId = next.settings.projects[0]?.id ?? null;
   state.activeProjectId = inferActiveProjectId(next);
   render();
+
+  void api.checkForUpdates().then((latest) => {
+    state.appState = latest;
+    if (latest.update.available) {
+      setNotice('info', latest.update.message || `Exposely ${displayVersionLabel(latest.update.latestVersion)} is available.`);
+      return;
+    }
+    render();
+  }).catch(() => {
+    // Ignore update check failures to keep startup non-blocking.
+  });
 
   window.runtime?.EventsOn('log', (payload) => {
     if (!state.appState) return;

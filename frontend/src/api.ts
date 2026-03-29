@@ -16,6 +16,7 @@ function appBinding(): AppBindings {
 
 export const api = {
   bootstrap: (): Promise<AppState> => appBinding().Bootstrap(),
+  checkForUpdates: (): Promise<AppState> => (appBinding() as AppBindings & { CheckForUpdates(): Promise<AppState> }).CheckForUpdates(),
   refreshState: (): Promise<AppState> => appBinding().RefreshState(),
   ensureCloudflared: (): Promise<AppState> => (appBinding() as AppBindings & { EnsureCloudflared(): Promise<AppState> }).EnsureCloudflared(),
   installCloudflared: (): Promise<AppState> => (appBinding() as AppBindings & { InstallCloudflared(): Promise<AppState> }).InstallCloudflared(),
@@ -34,6 +35,7 @@ export const api = {
   openPublicURL: (id: string): Promise<void> => appBinding().OpenPublicURL(id),
   openConfigFile: (): Promise<void> => appBinding().OpenConfigFile(),
   openSettingsFile: (): Promise<void> => appBinding().OpenSettingsFile(),
+  openLatestRelease: (): Promise<void> => (appBinding() as AppBindings & { OpenLatestRelease(): Promise<void> }).OpenLatestRelease(),
   browseProjectFolder: (currentPath: string): Promise<string> => appBinding().BrowseProjectFolder(currentPath),
   testProject: (id: string): Promise<string> => appBinding().TestProject(id),
 };

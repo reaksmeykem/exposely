@@ -58,6 +58,7 @@ export interface AppState {
   settings: AppSettings;
   status: TunnelStatus;
   license: LicenseState;
+  update: UpdateInfo;
   configPath: string;
   settingsPath: string;
   homeDir: string;
@@ -69,4 +70,13 @@ export interface AppState {
   buildRunning: boolean;
   buildCommandDetected: boolean;
   productVersion: string;
+}
+
+export interface UpdateInfo {
+  checked: boolean;
+  available: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  releaseUrl: string;
+  message: string;
 }

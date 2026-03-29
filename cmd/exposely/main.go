@@ -8,11 +8,12 @@ import (
 	"strings"
 
 	"github.com/reaksmeykem/exposely/internal/models"
+	"github.com/reaksmeykem/exposely/internal/version"
 )
 
-const cliVersion = "1.0.14"
-const cliRepoOwner = "reaksmeykem"
-const cliRepoName = "exposely"
+const cliVersion = version.Version
+const cliRepoOwner = version.RepoOwner
+const cliRepoName = version.RepoName
 
 func main() {
 	if len(os.Args) < 2 {
