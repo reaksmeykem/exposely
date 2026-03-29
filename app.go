@@ -24,10 +24,10 @@ import (
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"cloudflaretunnelmanager/internal/cloudflare"
-	applicense "cloudflaretunnelmanager/internal/license"
-	"cloudflaretunnelmanager/internal/models"
-	"cloudflaretunnelmanager/internal/settings"
+	"github.com/reaksmeykem/exposely/internal/cloudflare"
+	applicense "github.com/reaksmeykem/exposely/internal/license"
+	"github.com/reaksmeykem/exposely/internal/models"
+	"github.com/reaksmeykem/exposely/internal/settings"
 )
 
 const embeddedLicensePublicKey = ""
@@ -52,7 +52,7 @@ type App struct {
 func NewApp() (*App, error) {
 	_ = loadDotEnv(".env")
 
-	store, err := settings.NewStore("CloudflareTunnelManager")
+	store, err := settings.NewStore("Exposely")
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +335,7 @@ func (a *App) startAutoTunnel(project models.ProjectPreset) (models.AppState, er
 		return a.RefreshState()
 	}
 
-	return models.AppState{}, errors.New("Auto mode could not determine how to run this project. Set a local URL, set a start command, provide a local host for Laravel, or point to a folder with index.html/dist/build output")
+	return models.AppState{}, errors.New("Auto mode could not determine how to run this project. Set a local URL, set a start command, provide a local host, or point to a folder with index.html/dist/build output")
 }
 
 func (a *App) resolveHTMLOrigin(project models.ProjectPreset) (string, int, *http.Server, error) {
@@ -356,7 +356,11 @@ func (a *App) resolveHTMLOrigin(project models.ProjectPreset) (string, int, *htt
 	if err != nil {
 		return "", 0, nil, err
 	}
-	return a.serveStaticDirectory(projectDir)
+	staticDir, ok := detectStaticSiteDir(projectDir)
+	if !ok {
+		return "", 0, nil, errors.New("HTML mode could not find index.html in the selected folder or common output folders (dist, build, public)")
+	}
+	return a.serveStaticDirectory(staticDir)
 }
 
 func resolveProjectServiceURL(project models.ProjectPreset) (string, bool, error) {
@@ -950,8 +954,11 @@ func (a *App) OpenPublicURL(projectID string) error {
 		return err
 	}
 	target := strings.TrimSpace(project.PublicURL)
-	if target == "" && normalizeShareMode(project.ShareMode) == models.ShareModeQuick {
-		target = strings.TrimSpace(a.manager.Status().ActiveURL)
+	if target == "" {
+		switch normalizeShareMode(project.ShareMode) {
+		case models.ShareModeAuto, models.ShareModeQuick, models.ShareModeHostHTML:
+			target = strings.TrimSpace(a.manager.Status().ActiveURL)
+		}
 	}
 	if target == "" {
 		target = a.projectPublicURL(project, settingsValue.DefaultDomain)
@@ -1008,7 +1015,7 @@ func (a *App) ClearLicense() (models.AppState, error) {
 func (a *App) BrowseProjectFolder(currentPath string) (string, error) {
 	defaultDir := a.resolveBrowseDirectory(currentPath)
 	selected, err := wruntime.OpenDirectoryDialog(a.ctx, wruntime.OpenDialogOptions{
-		Title:                "Select Laravel Project Folder",
+		Title:                "Select Project Folder",
 		DefaultDirectory:     defaultDir,
 		CanCreateDirectories: true,
 	})
@@ -1229,10 +1236,10 @@ func (a *App) loadProject(projectID string) (models.AppSettings, models.ProjectP
 func (a *App) normalizeSettings(input models.AppSettings) models.AppSettings {
 	output := input
 	if strings.TrimSpace(output.DefaultDomain) == "" {
-		output.DefaultDomain = "reaksmeykem.dev"
+		output.DefaultDomain = "example.com"
 	}
 	if strings.TrimSpace(output.TunnelName) == "" {
-		output.TunnelName = "laravel-herd"
+		output.TunnelName = "exposely"
 	}
 	if strings.TrimSpace(output.DefaultServiceURL) == "" {
 		output.DefaultServiceURL = "http://127.0.0.1:80"
@@ -1398,7 +1405,7 @@ func validateProjectSource(input models.ProjectPreset) error {
 
 func normalizeShareMode(mode models.ShareMode) models.ShareMode {
 	switch mode {
-	case models.ShareModeAuto, models.ShareModeQuick, models.ShareModeHostHTML:
+	case models.ShareModeAuto, models.ShareModeStable, models.ShareModeRandomDomain, models.ShareModeQuick, models.ShareModeHostHTML:
 		return mode
 	default:
 		return models.ShareModeQuick

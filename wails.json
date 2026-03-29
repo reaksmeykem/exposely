@@ -1,17 +1,17 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "Cloudflare Tunnel Manager",
-  "outputfilename": "CloudflareTunnelManager",
+  "name": "Exposely",
+  "outputfilename": "Exposely",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "http://127.0.0.1:5173",
   "author": {
-    "name": "OpenAI Codex"
+    "name": "Exposely Contributors"
   },
   "info": {
-    "companyName": "Cloudflare Tunnel Manager",
-    "productName": "Cloudflare Tunnel Manager",
+    "companyName": "Exposely",
+    "productName": "Exposely",
     "productVersion": "1.0.13",
     "copyright": "Copyright 2026",
     "comments": "Manage your Cloudflare Tunnels easily"

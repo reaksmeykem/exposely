@@ -1,83 +1,69 @@
-# Cloudflare Tunnel Manager for Laravel Herd
+# Exposely
 
-Windows desktop MVP for managing Cloudflare Tunnel against local Laravel Herd sites without hand-editing `config.yml` or repeatedly typing `cloudflared` commands.
+Exposely is a Windows desktop app built with Wails that helps you expose local projects through Cloudflare Tunnel without hand-editing `config.yml` or repeatedly typing `cloudflared` commands.
 
-## What this MVP does
+It supports:
 
-- Detects user-installed `cloudflared` from `PATH`, a configured executable path, or common Windows install paths.
-- Persists project presets and app defaults in `%AppData%\CloudflareTunnelManager\settings.json`.
-- Reads and writes `%USERPROFILE%\.cloudflared\config.yml`.
-- Supports multiple ingress rules in one named tunnel config.
-- Reuses or creates a named tunnel, adds DNS routes, updates ingress safely, and starts `cloudflared tunnel run <name>`.
-- Supports Laravel Herd host header override through `originRequest.httpHostHeader`.
-- Shows live `cloudflared` and `npm run build` output in the UI.
-- Supports:
-  - stable hostnames such as `app.reaksmeykem.dev`
-  - generated random hostnames under your domain such as `x8f3k2.reaksmeykem.dev`
-- Opens public URLs and the Cloudflare config file from the UI.
-- Tests the local Herd site by calling the configured origin URL with the selected `Host` header.
+- Laravel and other local-host based apps
+- static HTML folders
+- already running local URLs such as `http://127.0.0.1:5500`
+- auto-detected local projects that can use a folder, local URL, or start command
 
-## Stack
+## Features
 
-- Go
-- Wails v2
-- TypeScript + Vite frontend
-- `cloudflared` CLI subprocess execution
-- YAML config management with `gopkg.in/yaml.v3`
+- Detects `cloudflared` from `PATH`, a configured path, or common Windows install locations
+- Stores app settings and project presets in `%AppData%\Exposely\settings.json`
+- Creates quick tunnels for local URLs and static sites
+- Manages named tunnels for stable hostnames under your own Cloudflare domain
+- Can serve a static folder automatically when needed
+- Can start a local dev command and detect the resulting local URL
+- Shows live `cloudflared` and project logs in the desktop UI
 
-## Project structure
+## Project Types
 
-```text
-.
-|-- app.go
-|-- main.go
-|-- go.mod
-|-- internal
-|   |-- cloudflare
-|   |   |-- config.go
-|   |   `-- service.go
-|   |-- models
-|   |   `-- types.go
-|   `-- settings
-|       `-- store.go
-|-- frontend
-|   |-- index.html
-|   |-- package.json
-|   |-- tsconfig.json
-|   |-- vite.config.ts
-|   `-- src
-|       |-- api.ts
-|       |-- main.ts
-|       |-- style.css
-|       |-- types.ts
-|       `-- wails.d.ts
-|-- docs
-|   `-- mock-ui.svg
-`-- wails.json
-```
+### Auto
+
+Auto mode can:
+
+- use an existing local URL
+- start a project command and detect a local dev server
+- use a local host for local-server projects
+- serve a static folder or common build output such as `dist`, `build`, or `public`
+
+### Laravel / Local Host
+
+Use this when your app runs behind a local host such as:
+
+- `my-app.test`
+- `my-app.local`
+- a local server fronted by Herd, Valet, or another host-based setup
+
+### HTML / Static Site
+
+Use this when your project is:
+
+- a static folder with `index.html`
+- a built static site
+- already running on a local URL such as `http://127.0.0.1:5500`
 
 ## Requirements
 
-1. Install Go 1.25+.
-2. Install Node.js 20+.
-3. Install Wails CLI:
+1. Install Go 1.25 or newer.
+2. Install Node.js 20 or newer.
+3. Install the Wails CLI:
 
 ```powershell
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 ```
 
-4. Install `cloudflared` and log in with your own Cloudflare account:
+4. Install `cloudflared`.
+5. Authenticate `cloudflared` with your Cloudflare account if you plan to use named tunnels:
 
 ```powershell
 cloudflared login
 ```
 
-5. Before using the app, make sure:
-   - the domain is on Cloudflare
-   - you have permissions to create DNS records
-   - the local tunnel credentials JSON exists or can be created
-
-## Run locally
+## Local Development
 
 ```powershell
 go mod tidy
@@ -87,7 +73,7 @@ cd ..
 wails dev
 ```
 
-## Build for Windows
+## Production Build
 
 ```powershell
 cd frontend
@@ -97,71 +83,84 @@ go mod tidy
 wails build
 ```
 
-## How sharing works
+The production executable is written to `build/bin/`.
 
-### Stable hostname flow
+## CLI
 
-When you share a project in stable mode, the app:
+This repository also includes a CLI for developers who do not want the desktop UI.
 
-1. Resolves or creates the named tunnel.
-2. Runs `cloudflared tunnel route dns <tunnel-name> <hostname>`.
-3. Updates `%USERPROFILE%\.cloudflared\config.yml`.
-4. Adds or replaces the ingress rule for that hostname.
-5. Writes:
+Install it from GitHub with:
 
-```yaml
-ingress:
-  - hostname: app.reaksmeykem.dev
-    service: http://127.0.0.1:80
-    originRequest:
-      httpHostHeader: hr-system.test
-  - service: http_status:404
+```powershell
+go install github.com/reaksmeykem/exposely/cmd/exposely@latest
 ```
 
-6. Starts or restarts `cloudflared tunnel --config <config> run <tunnel-name>`.
+Or build it locally with:
 
-### Random hostname under your own domain
+```powershell
+go build -o build/bin/exposely-cli.exe ./cmd/exposely
+```
 
-The app generates a random subdomain, adds a DNS route for it, writes the matching ingress rule, and starts the named tunnel.
+Examples:
 
-## Default settings
+```powershell
+exposely status
+exposely projects
+exposely share --project my-site
+exposely share --url http://127.0.0.1:5500
+exposely share --path D:\site --mode host-html
+exposely share --host app.test --mode stable --subdomain my-app
+```
 
-The app boots with these defaults, which you can change in the UI:
+`share` runs in the foreground and keeps the tunnel alive until you stop it with `Ctrl+C`.
 
-- Default domain: `reaksmeykem.dev`
-- Default tunnel name: `laravel-herd`
+## How It Works
+
+### Quick Tunnel
+
+For local URLs or static folders, Exposely starts a quick Cloudflare Tunnel and returns a public URL.
+
+### Named Tunnel
+
+For stable hostnames under your own domain, Exposely can:
+
+1. resolve or create a named tunnel
+2. add a DNS route
+3. update `%USERPROFILE%\.cloudflared\config.yml`
+4. start `cloudflared tunnel run <name>`
+
+## Default Settings
+
+The app ships with generic defaults intended to be changed in the UI before use:
+
+- Default domain: `example.com`
+- Default tunnel name: `exposely`
 - Default service URL: `http://127.0.0.1:80`
 
-## MVP limitations
+## Open Source Notes
 
-- No Windows system tray integration yet.
-- No Windows login auto-start yet.
-- No full Cloudflare API integration; the MVP relies on the CLI only.
-- Every user must install `cloudflared` and authenticate with their own Cloudflare account; the app no longer downloads a managed copy.
-- The frontend is written against Wails runtime globals, so opening `frontend/index.html` directly in a normal browser will not work.
+- Generated files such as `frontend/dist`, `frontend/node_modules`, `frontend/wailsjs`, and `build/bin` are ignored from git.
+- Wails will regenerate the frontend bindings during normal `wails dev` and `wails build` workflows.
+- If you fork this project, update the default domain, tunnel name, product metadata, and branding to your own values.
 
-## Error handling covered
+## CI
 
-- `cloudflared` missing
-- tunnel missing
-- DNS route failure
-- invalid or missing `config.yml`
-- missing project folder
-- `npm run build` failure
-- tunnel already running
-- local service unreachable
-- Cloudflare login or credential issues surfaced from `cloudflared` stderr
+GitHub Actions runs:
 
-## Future extension points
+- `go test ./...`
+- frontend dependency install
+- frontend build
 
-- system tray
-- Windows service install for `cloudflared`
-- multiple domains
-- richer tunnel inspection
-- per-project service URL override
-- health checks before share
-- access policy management
+See [.github/workflows/ci.yml](./.github/workflows/ci.yml).
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md), [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md), and [SECURITY.md](./SECURITY.md).
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](./LICENSE).
 
 ## Mock UI
 
-See [docs/mock-ui.svg](./docs/mock-ui.svg) for a simple UI mock derived from the shipped layout.
+See [docs/mock-ui.svg](./docs/mock-ui.svg) for the lightweight UI mock included in the repo.

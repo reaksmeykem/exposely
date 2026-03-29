@@ -136,7 +136,7 @@ function projectTypeLabel(project: ProjectPreset): string {
     case 'host-html':
       return 'HTML Project';
     default:
-      return 'Laravel Project';
+      return 'Local Host Project';
   }
 }
 
@@ -270,7 +270,7 @@ function render() {
     root.innerHTML = `
       <main class="shell loading-state">
         <section class="hero-card">
-          <h1>Cloudflare Tunnel Manager</h1>
+          <h1>Exposely</h1>
           <p>Loading backend state...</p>
         </section>
       </main>
@@ -319,9 +319,9 @@ function render() {
       <aside class="sidebar">
         <div class="sidebar-header">
           <div class="logo">
-            <img src="./logo.png" alt="App logo" />
+            <img src="./logo.png?v=2" alt="App logo" />
             <div class="logo-text">
-              <h1>Tunnel Manager</h1>
+              <h1>Exposely</h1>
               <div class="status-indicator tone-${statusTone(tunnelStatus)}">
                 <span class="status-dot"></span>
                 <span>${escapeHtml(tunnelStatus.running ? 'Running' : 'Stopped')}</span>
@@ -448,13 +448,13 @@ function render() {
                     Project Type
                     <select name="shareMode">
                       <option value="auto" ${state.editorProject.shareMode === 'auto' ? 'selected' : ''}>Auto Detect Project</option>
-                      <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>Laravel Project (Local Server)</option>
+                      <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>Local Host Project</option>
                       <option value="host-html" ${state.editorProject.shareMode === 'host-html' ? 'selected' : ''}>HTML Project (Folder or Local URL)</option>
                     </select>
                   </label>
                   ${
                     state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto'
-                      ? `<label>${state.editorProject.shareMode === 'auto' ? 'Local host (optional)' : 'Local host'}<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="hr-system.test" /></label>`
+                      ? `<label>${state.editorProject.shareMode === 'auto' ? 'Local host (optional)' : 'Local host'}<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="app.test" /></label>`
                       : ''
                   }
                   ${
@@ -485,7 +485,7 @@ function render() {
                            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
                            <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                          </svg>
-                         <span>Auto mode can use a local URL, run a start command and detect the dev server, use a Laravel host, or serve a static folder/build output.</span>
+                         <span>Auto mode can use a local URL, run a start command and detect the dev server, use a local host, or serve a static folder/build output.</span>
                         </div>
                         `
                        : `
@@ -494,7 +494,7 @@ function render() {
                            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
                            <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                          </svg>
-                         <span>Expose your local Laravel Herd hostname securely to a public URL.</span>
+                         <span>Expose a local host such as app.test through a public URL.</span>
                        </div>
                      `
                    }
@@ -643,7 +643,7 @@ function render() {
                     <div class="panel-header">
                       <div>
                         <p class="eyebrow">Application</p>
-                        <h2>Cloudflare Tunnel Manager</h2>
+                        <h2>Exposely</h2>
                       </div>
                     </div>
                     <div class="metric-grid">

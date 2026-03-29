@@ -1,4 +1,4 @@
-module cloudflaretunnelmanager
+module github.com/reaksmeykem/exposely
 
 go 1.25.0
 

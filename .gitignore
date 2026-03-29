@@ -1,0 +1,57 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Go
+.gocache/
+*.test
+*.out
+coverage.out
+
+# Binaries
+/cloudflaretunnelmanager.exe
+/test_wails.exe
+/CloudflareTunnelManager.exe
+/Exposely.exe
+/build/bin/
+*.exe~
+
+# Frontend
+/frontend/node_modules/
+/frontend/dist/*
+!/frontend/dist/.keep
+/frontend/wailsjs/*
+!/frontend/wailsjs/runtime/
+/frontend/wailsjs/runtime/*
+!/frontend/wailsjs/runtime/runtime.js
+!/frontend/wailsjs/runtime/runtime.d.ts
+
+# Wails / installer temp output
+/build/windows/installer/tmp/
+/build/tools/nsis/
+/build/tools/nsis-3.11.zip
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI / local tooling
+.junie/
+.zencoder/
+.zenflow/
+.cursor/
+.windsurf/
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local accidental folders
+/-Path/
+/-Value/
+/Hello/
+/Set-Content/

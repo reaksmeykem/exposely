@@ -1,9 +1,13 @@
 package main
 
 import (
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"cloudflaretunnelmanager/internal/models"
+	"github.com/reaksmeykem/exposely/internal/models"
 )
 
 func TestNormalizeServiceURLStripsPath(t *testing.T) {
@@ -53,5 +57,66 @@ func TestValidateProjectSourceForAuto(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveHTMLOriginUsesBuildOutputDirectory(t *testing.T) {
+	projectDir := t.TempDir()
+	distDir := filepath.Join(projectDir, "dist")
+	if err := os.MkdirAll(distDir, 0o755); err != nil {
+		t.Fatalf("failed to create dist directory: %v", err)
+	}
+	indexPath := filepath.Join(distDir, "index.html")
+	if err := os.WriteFile(indexPath, []byte("<html><body>dist-output</body></html>"), 0o644); err != nil {
+		t.Fatalf("failed to write index.html: %v", err)
+	}
+
+	app := &App{}
+	serviceURL, _, server, err := app.resolveHTMLOrigin(models.ProjectPreset{
+		ShareMode:   models.ShareModeHostHTML,
+		ProjectPath: projectDir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if server == nil {
+		t.Fatalf("expected static server to be started")
+	}
+	defer server.Shutdown(t.Context())
+
+	resp, err := http.Get(serviceURL)
+	if err != nil {
+		t.Fatalf("failed to reach resolved HTML origin: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+	if string(body) != "<html><body>dist-output</body></html>" {
+		t.Fatalf("unexpected response body: %q", string(body))
+	}
+}
+
+func TestResolveHTMLOriginRejectsFolderWithoutStaticEntryPoint(t *testing.T) {
+	projectDir := t.TempDir()
+	app := &App{}
+
+	_, _, _, err := app.resolveHTMLOrigin(models.ProjectPreset{
+		ShareMode:   models.ShareModeHostHTML,
+		ProjectPath: projectDir,
+	})
+	if err == nil {
+		t.Fatalf("expected missing HTML entrypoint to fail")
+	}
+}
+
+func TestNormalizeShareModePreservesStableAndRandom(t *testing.T) {
+	if got := normalizeShareMode(models.ShareModeStable); got != models.ShareModeStable {
+		t.Fatalf("expected stable mode to be preserved, got %q", got)
+	}
+	if got := normalizeShareMode(models.ShareModeRandomDomain); got != models.ShareModeRandomDomain {
+		t.Fatalf("expected random-domain mode to be preserved, got %q", got)
 	}
 }

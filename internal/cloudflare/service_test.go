@@ -3,12 +3,12 @@ package cloudflare
 import "testing"
 
 func TestQuickTunnelArgsWithHostHeader(t *testing.T) {
-	args := quickTunnelArgs("http://127.0.0.1:8080", "hr-system.test")
+	args := quickTunnelArgs("http://127.0.0.1:8080", "app.test")
 
 	assertArgsEqual(t, args, []string{
 		"tunnel",
 		"--url", "http://127.0.0.1:8080",
-		"--http-host-header", "hr-system.test",
+		"--http-host-header", "app.test",
 	})
 }
 

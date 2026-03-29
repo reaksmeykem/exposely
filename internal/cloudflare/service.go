@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"cloudflaretunnelmanager/internal/models"
+	"github.com/reaksmeykem/exposely/internal/models"
 )
 
 var quickTunnelURLPattern = regexp.MustCompile(`https://[a-z0-9-]+\.trycloudflare\.com`)

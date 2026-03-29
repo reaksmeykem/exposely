@@ -33,8 +33,8 @@ type AppSettings struct {
 
 func DefaultSettings() AppSettings {
 	return AppSettings{
-		DefaultDomain:     "reaksmeykem.dev",
-		TunnelName:        "laravel-herd",
+		DefaultDomain:     "example.com",
+		TunnelName:        "exposely",
 		CloudflaredPath:   "",
 		DefaultServiceURL: "http://127.0.0.1:80",
 		Projects:          []ProjectPreset{},

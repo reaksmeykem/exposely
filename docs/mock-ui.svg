@@ -6,14 +6,14 @@
   <rect x="28" y="404" width="460" height="260" rx="24" fill="#FFF9F1" stroke="#D8D0C2"/>
   <rect x="508" y="404" width="744" height="260" rx="24" fill="#FFF9F1" stroke="#D8D0C2"/>
   <rect x="28" y="684" width="1224" height="108" rx="24" fill="#FFF9F1" stroke="#D8D0C2"/>
-  <text x="58" y="72" fill="#122026" font-size="34" font-family="Segoe UI, sans-serif">Cloudflare Tunnel Manager for Laravel Herd</text>
+  <text x="58" y="72" fill="#122026" font-size="34" font-family="Segoe UI, sans-serif">Exposely</text>
   <text x="58" y="102" fill="#647076" font-size="18" font-family="Segoe UI, sans-serif">Status, saved projects, share actions, logs, and config controls in one window.</text>
   <text x="56" y="192" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">TUNNEL STATUS</text>
-  <text x="56" y="228" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">laravel-herd</text>
+  <text x="56" y="228" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">exposely</text>
   <text x="836" y="192" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">SETTINGS</text>
   <text x="836" y="228" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">Defaults</text>
   <text x="56" y="442" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">PROJECT PRESETS</text>
-  <text x="56" y="478" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">Laravel Herd apps</text>
+  <text x="56" y="478" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">Saved projects</text>
   <text x="536" y="442" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">SELECTED PROJECT</text>
   <text x="536" y="478" fill="#122026" font-size="26" font-family="Segoe UI, sans-serif">HR System</text>
   <text x="56" y="722" fill="#647076" font-size="15" font-family="Segoe UI, sans-serif">LOGS</text>

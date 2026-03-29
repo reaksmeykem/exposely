@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"cloudflaretunnelmanager/internal/models"
+	"github.com/reaksmeykem/exposely/internal/models"
 )
 
 type Store struct {

@@ -19,7 +19,7 @@ func main() {
 	}
 
 	err = wails.Run(&options.App{
-		Title:            "Cloudflare Tunnel Manager",
+		Title:            "Exposely",
 		Width:            1040,
 		Height:           700,
 		MinWidth:         900,

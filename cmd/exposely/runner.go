@@ -1,0 +1,557 @@
+package main
+
+import (
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/reaksmeykem/exposely/internal/cloudflare"
+	"github.com/reaksmeykem/exposely/internal/models"
+	"github.com/reaksmeykem/exposely/internal/settings"
+)
+
+var cliLocalServiceURLPattern = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(?:/[^\s"'<>]*)?`)
+
+type cliRunner struct {
+	store      *settings.Store
+	manager    *cloudflare.Manager
+	configPath string
+	homeDir    string
+	appDataDir string
+	workDir    string
+
+	projectMu  sync.Mutex
+	projectCmd *exec.Cmd
+
+	lastQuickURL string
+}
+
+func newCLIRunner() (*cliRunner, error) {
+	store, err := settings.NewStore("Exposely")
+	if err != nil {
+		return nil, err
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	workDir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	runner := &cliRunner{
+		store:      store,
+		configPath: filepath.Join(homeDir, ".cloudflared", "config.yml"),
+		homeDir:    homeDir,
+		appDataDir: filepath.Dir(store.Path()),
+		workDir:    workDir,
+	}
+	runner.manager = cloudflare.NewManager(
+		runner.configPath,
+		runner.handleLog,
+		runner.handleStatus,
+	)
+	return runner, nil
+}
+
+func (r *cliRunner) printStatus() error {
+	settingsValue, err := r.store.Load()
+	if err != nil {
+		return err
+	}
+	settingsValue = r.normalizeSettings(settingsValue)
+
+	cloudflaredPath, detectErr := r.detectCloudflaredPath(settingsValue.CloudflaredPath)
+	status := "not detected"
+	if detectErr == nil {
+		status = cloudflaredPath
+	}
+
+	fmt.Printf("Settings: %s\n", r.store.Path())
+	fmt.Printf("Config:    %s\n", r.configPath)
+	fmt.Printf("Domain:    %s\n", settingsValue.DefaultDomain)
+	fmt.Printf("Tunnel:    %s\n", settingsValue.TunnelName)
+	fmt.Printf("Origin:    %s\n", settingsValue.DefaultServiceURL)
+	fmt.Printf("Projects:  %d\n", len(settingsValue.Projects))
+	fmt.Printf("cloudflared: %s\n", status)
+	if detectErr != nil {
+		fmt.Printf("cloudflared error: %v\n", detectErr)
+	}
+	return nil
+}
+
+func (r *cliRunner) printProjects() error {
+	settingsValue, err := r.store.Load()
+	if err != nil {
+		return err
+	}
+	settingsValue = r.normalizeSettings(settingsValue)
+	if len(settingsValue.Projects) == 0 {
+		fmt.Println("No saved projects.")
+		return nil
+	}
+
+	for _, project := range settingsValue.Projects {
+		fmt.Printf("%s\t%s\t%s\n", project.ID, project.DisplayName, r.projectSummary(project))
+	}
+	return nil
+}
+
+func (r *cliRunner) handleLog(entry models.LogEntry) {
+	r.printLog(entry.Source, entry.Level, entry.Message)
+}
+
+func (r *cliRunner) handleStatus(status models.TunnelStatus) {
+	if strings.TrimSpace(status.ActiveURL) == "" {
+		return
+	}
+	if status.ActiveURL == r.lastQuickURL {
+		return
+	}
+	r.lastQuickURL = status.ActiveURL
+	fmt.Printf("Public URL: %s\n", status.ActiveURL)
+}
+
+func (r *cliRunner) printLog(source, level, message string) {
+	fmt.Fprintf(os.Stderr, "%s [%s] %s\n", strings.ToUpper(level), source, message)
+}
+
+func (r *cliRunner) detectCloudflaredPath(configuredPath string) (string, error) {
+	if path, err := r.manager.DetectCloudflared(configuredPath); err == nil {
+		return path, nil
+	}
+	if managedPath := r.managedCloudflaredPath(); strings.TrimSpace(managedPath) != "" {
+		if path, err := r.manager.DetectCloudflared(managedPath); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New("cloudflared was not found. Install it or configure the executable path in settings")
+}
+
+func (r *cliRunner) managedCloudflaredPath() string {
+	return filepath.Join(r.appDataDir, "bin", "cloudflared.exe")
+}
+
+func (r *cliRunner) loadProject(projectRef string) (models.AppSettings, models.ProjectPreset, error) {
+	settingsValue, err := r.store.Load()
+	if err != nil {
+		return models.AppSettings{}, models.ProjectPreset{}, err
+	}
+	settingsValue = r.normalizeSettings(settingsValue)
+
+	normalizedRef := strings.TrimSpace(strings.ToLower(projectRef))
+	for _, project := range settingsValue.Projects {
+		if strings.EqualFold(strings.TrimSpace(project.ID), normalizedRef) || strings.EqualFold(strings.TrimSpace(project.DisplayName), normalizedRef) {
+			return settingsValue, r.normalizeProject(project), nil
+		}
+	}
+	return models.AppSettings{}, models.ProjectPreset{}, fmt.Errorf("project %q not found", projectRef)
+}
+
+func (r *cliRunner) normalizeSettings(input models.AppSettings) models.AppSettings {
+	output := input
+	if strings.TrimSpace(output.DefaultDomain) == "" {
+		output.DefaultDomain = "example.com"
+	}
+	if strings.TrimSpace(output.TunnelName) == "" {
+		output.TunnelName = "exposely"
+	}
+	if strings.TrimSpace(output.DefaultServiceURL) == "" {
+		output.DefaultServiceURL = "http://127.0.0.1:80"
+	}
+	for i := range output.Projects {
+		output.Projects[i] = r.normalizeProject(output.Projects[i])
+	}
+	return output
+}
+
+func (r *cliRunner) normalizeProject(project models.ProjectPreset) models.ProjectPreset {
+	project.ID = strings.TrimSpace(project.ID)
+	project.DisplayName = strings.TrimSpace(project.DisplayName)
+	project.LocalHost = strings.TrimSpace(project.LocalHost)
+	project.Subdomain = strings.TrimSpace(strings.ToLower(project.Subdomain))
+	project.PublicURL = strings.TrimSpace(project.PublicURL)
+	project.ProjectPath = strings.TrimSpace(project.ProjectPath)
+	project.LocalURL = strings.TrimSpace(project.LocalURL)
+	project.StartCommand = strings.TrimSpace(project.StartCommand)
+	project.ShareMode = normalizeCLIShareMode(project.ShareMode)
+	return project
+}
+
+func (r *cliRunner) projectSummary(project models.ProjectPreset) string {
+	switch normalizeCLIShareMode(project.ShareMode) {
+	case models.ShareModeHostHTML:
+		if project.LocalURL != "" {
+			return "HTML URL -> " + project.LocalURL
+		}
+		return "HTML folder -> " + project.ProjectPath
+	case models.ShareModeAuto:
+		switch {
+		case project.LocalURL != "":
+			return "Auto URL -> " + project.LocalURL
+		case project.StartCommand != "":
+			return "Auto start -> " + project.StartCommand
+		case project.LocalHost != "":
+			return "Auto host -> " + project.LocalHost
+		default:
+			return "Auto path -> " + project.ProjectPath
+		}
+	case models.ShareModeStable:
+		return "Stable -> " + project.Subdomain
+	case models.ShareModeRandomDomain:
+		return "Random domain"
+	default:
+		return "Local host -> " + project.LocalHost
+	}
+}
+
+func (r *cliRunner) resolveProjectDirectory(projectPath string) (string, error) {
+	trimmed := strings.TrimSpace(projectPath)
+	if trimmed == "" {
+		return "", errors.New("project folder path is required")
+	}
+
+	absPath := trimmed
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(r.workDir, absPath)
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("project folder not found or is not a directory: %s", absPath)
+	}
+	return absPath, nil
+}
+
+func (r *cliRunner) serveStaticDirectory(absPath string) (string, int, *http.Server, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		listener, err = net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			return "", 0, nil, fmt.Errorf("failed to find a free port for static site: %w", err)
+		}
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			r.printLog("html-server", "info", fmt.Sprintf("Request: %s %s from %s [Host: %s]", req.Method, req.URL.Path, req.RemoteAddr, req.Host))
+			http.FileServer(http.Dir(absPath)).ServeHTTP(w, req)
+		}),
+	}
+
+	go func() {
+		r.printLog("html-server", "info", fmt.Sprintf("Static server started on %s for %s", serviceURL, absPath))
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			r.printLog("html-server", "error", fmt.Sprintf("Static server failed: %v", err))
+		}
+	}()
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if err := checkCLIHTTPService(serviceURL); err != nil {
+			r.printLog("html-server", "error", fmt.Sprintf("Self-connectivity check failed for %s: %v", serviceURL, err))
+			return
+		}
+		r.printLog("html-server", "info", fmt.Sprintf("Self-connectivity check successful for %s", serviceURL))
+	}()
+
+	return serviceURL, port, server, nil
+}
+
+func (r *cliRunner) startProjectCommand(projectDir, commandText string) (<-chan string, error) {
+	r.projectMu.Lock()
+	defer r.projectMu.Unlock()
+
+	if r.projectCmd != nil && r.projectCmd.Process != nil {
+		return nil, errors.New("a project start command is already running")
+	}
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/C", commandText)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000,
+		}
+	} else {
+		cmd = exec.Command("sh", "-lc", commandText)
+	}
+	cmd.Dir = projectDir
+	cmd.Env = os.Environ()
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	r.projectCmd = cmd
+	urlCh := make(chan string, 8)
+	r.printLog("project", "info", "Started project command: "+commandText)
+
+	go r.streamProjectPipe("project", stdout, urlCh)
+	go r.streamProjectPipe("project", stderr, urlCh)
+	go r.waitForProjectCommand(cmd, commandText)
+
+	return urlCh, nil
+}
+
+func (r *cliRunner) streamProjectPipe(source string, pipe io.ReadCloser, urlCh chan<- string) {
+	scanner := bufio.NewScanner(pipe)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		level := "info"
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "error") || strings.Contains(lower, "failed") {
+			level = "error"
+		}
+		r.printLog(source, level, line)
+
+		if match := cliLocalServiceURLPattern.FindString(line); match != "" {
+			if normalized, ok, err := normalizeCLIServiceURL(match); ok && err == nil {
+				select {
+				case urlCh <- normalized:
+				default:
+				}
+			}
+		}
+	}
+}
+
+func (r *cliRunner) waitForProjectCommand(cmd *exec.Cmd, commandText string) {
+	err := cmd.Wait()
+
+	r.projectMu.Lock()
+	if r.projectCmd == cmd {
+		r.projectCmd = nil
+	}
+	r.projectMu.Unlock()
+
+	if err != nil {
+		r.printLog("project", "error", "Project command exited: "+err.Error())
+		return
+	}
+	r.printLog("project", "info", "Project command exited: "+commandText)
+}
+
+func (r *cliRunner) stopProjectCommand() {
+	r.projectMu.Lock()
+	defer r.projectMu.Unlock()
+
+	if r.projectCmd == nil || r.projectCmd.Process == nil {
+		return
+	}
+	_ = exec.Command("taskkill", "/PID", fmt.Sprint(r.projectCmd.Process.Pid), "/T", "/F").Run()
+	r.projectCmd = nil
+}
+
+func (r *cliRunner) resolveHostname(project models.ProjectPreset, domain string, useRandom bool) (string, string) {
+	var subdomain string
+	if useRandom || normalizeCLIShareMode(project.ShareMode) == models.ShareModeRandomDomain {
+		subdomain = randomCLISubdomain()
+	} else {
+		subdomain = strings.TrimSpace(strings.ToLower(project.Subdomain))
+	}
+	if subdomain == "" || strings.TrimSpace(domain) == "" {
+		return "", ""
+	}
+	hostname := subdomain + "." + strings.TrimSpace(domain)
+	return hostname, "https://" + hostname
+}
+
+func (r *cliRunner) updateProjectShare(settingsValue models.AppSettings, projectID, subdomain, fullURL string) models.AppSettings {
+	for i := range settingsValue.Projects {
+		if settingsValue.Projects[i].ID == projectID {
+			settingsValue.Projects[i].PublicURL = fullURL
+			if normalizeCLIShareMode(settingsValue.Projects[i].ShareMode) == models.ShareModeStable {
+				settingsValue.Projects[i].Subdomain = subdomain
+			}
+			break
+		}
+	}
+	return settingsValue
+}
+
+func validateCLIProject(project models.ProjectPreset) error {
+	switch normalizeCLIShareMode(project.ShareMode) {
+	case models.ShareModeAuto:
+		if project.ProjectPath == "" && project.LocalURL == "" && project.LocalHost == "" {
+			return errors.New("Auto mode requires a project folder, local URL, or local host")
+		}
+	case models.ShareModeHostHTML:
+		if project.ProjectPath == "" && project.LocalURL == "" {
+			return errors.New("HTML mode requires a project folder or local URL")
+		}
+	case models.ShareModeStable:
+		if project.LocalHost == "" {
+			return errors.New("stable mode requires --host")
+		}
+		if project.Subdomain == "" {
+			return errors.New("stable mode requires --subdomain")
+		}
+	case models.ShareModeRandomDomain:
+		if project.LocalHost == "" {
+			return errors.New("random-domain mode requires --host")
+		}
+	case models.ShareModeQuick:
+		if project.LocalHost == "" {
+			return errors.New("quick mode requires --host")
+		}
+	default:
+		return fmt.Errorf("unsupported share mode %q", project.ShareMode)
+	}
+
+	if project.StartCommand != "" && project.ProjectPath == "" {
+		return errors.New("a project folder path is required when --start is set")
+	}
+	return nil
+}
+
+func normalizeCLIShareMode(mode models.ShareMode) models.ShareMode {
+	switch mode {
+	case models.ShareModeAuto, models.ShareModeStable, models.ShareModeRandomDomain, models.ShareModeQuick, models.ShareModeHostHTML:
+		return mode
+	default:
+		return models.ShareModeQuick
+	}
+}
+
+func normalizeCLIServiceURL(raw string) (string, bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	if len(trimmed) >= 2 && trimmed[1] == ':' {
+		return "", false, nil
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		if strings.Contains(trimmed, "://") {
+			return "", true, fmt.Errorf("invalid local URL: %w", err)
+		}
+		return "", false, nil
+	}
+	if parsed.Scheme == "" {
+		return "", false, nil
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", true, errors.New("local URL must use http or https")
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return "", true, errors.New("local URL must include a host")
+	}
+
+	return (&url.URL{Scheme: scheme, Host: parsed.Host}).String(), true, nil
+}
+
+func checkCLIHTTPService(serviceURL string) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(serviceURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusInternalServerError {
+		return fmt.Errorf("%s responded with HTTP %d", serviceURL, resp.StatusCode)
+	}
+	return nil
+}
+
+func detectCLIStaticSiteDir(projectDir string) (string, bool) {
+	candidates := []string{
+		projectDir,
+		filepath.Join(projectDir, "dist"),
+		filepath.Join(projectDir, "build"),
+		filepath.Join(projectDir, "public"),
+	}
+	for _, candidate := range candidates {
+		indexPath := filepath.Join(candidate, "index.html")
+		if info, err := os.Stat(indexPath); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func detectCLICommandPorts(commandText string) []int {
+	fields := strings.Fields(commandText)
+	ports := make([]int, 0, 4)
+	seen := map[int]struct{}{}
+
+	addPort := func(port int) {
+		if port <= 0 || port > 65535 {
+			return
+		}
+		if _, exists := seen[port]; exists {
+			return
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+
+	for i, field := range fields {
+		lower := strings.ToLower(field)
+		switch {
+		case lower == "--port" || lower == "-p":
+			if i+1 < len(fields) {
+				var port int
+				if _, err := fmt.Sscanf(fields[i+1], "%d", &port); err == nil {
+					addPort(port)
+				}
+			}
+		case strings.HasPrefix(lower, "--port="):
+			var port int
+			if _, err := fmt.Sscanf(strings.TrimPrefix(lower, "--port="), "%d", &port); err == nil {
+				addPort(port)
+			}
+		case strings.HasPrefix(lower, "port="):
+			var port int
+			if _, err := fmt.Sscanf(strings.TrimPrefix(lower, "port="), "%d", &port); err == nil {
+				addPort(port)
+			}
+		}
+	}
+
+	return ports
+}
+
+func randomCLISubdomain() string {
+	bytes := make([]byte, 4)
+	if _, err := rand.Read(bytes); err != nil {
+		return fmt.Sprintf("share-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(bytes)
+}
