@@ -70,7 +70,7 @@ func (r *cliRunner) selfUpdate() error {
 	}
 
 	fmt.Printf("Updating exposely from %s to %s\n", cliVersion, latestVersion)
-	if err := launchWindowsReplace(exePath, tempPath); err != nil {
+	if err := launchWindowsReplace(os.Getpid(), exePath, tempPath); err != nil {
 		_ = os.Remove(tempPath)
 		return err
 	}
@@ -135,25 +135,40 @@ func downloadFile(downloadURL, destination string) error {
 	return nil
 }
 
-func launchWindowsReplace(targetPath, downloadedPath string) error {
+func launchWindowsReplace(parentPID int, targetPath, downloadedPath string) error {
 	targetDir := filepath.Dir(targetPath)
-	escapedTarget := strconv.Quote(targetPath)
-	escapedDownloaded := strconv.Quote(downloadedPath)
-	script := fmt.Sprintf(`$ErrorActionPreference = 'SilentlyContinue'
-$target = %s
-$downloaded = %s
-Start-Sleep -Milliseconds 1200
-for ($i = 0; $i -lt 40; $i++) {
-  try {
-    Move-Item -LiteralPath $downloaded -Destination $target -Force
-    exit 0
-  } catch {
-    Start-Sleep -Milliseconds 500
-  }
-}
-exit 1`, escapedTarget, escapedDownloaded)
+	script := buildWindowsReplaceScript(parentPID, targetPath, downloadedPath)
 	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", script)
 	cmd.Dir = targetDir
 	cmd.SysProcAttr = windowsHiddenProcessAttrs()
 	return cmd.Start()
+}
+
+func buildWindowsReplaceScript(parentPID int, targetPath, downloadedPath string) string {
+	escapedTarget := strconv.Quote(targetPath)
+	escapedDownloaded := strconv.Quote(downloadedPath)
+
+	return fmt.Sprintf(`$ErrorActionPreference = 'SilentlyContinue'
+$parentPID = %d
+$target = %s
+$downloaded = %s
+for ($i = 0; $i -lt 120; $i++) {
+  $parent = Get-Process -Id $parentPID -ErrorAction SilentlyContinue
+  if ($null -ne $parent) {
+    Start-Sleep -Milliseconds 500
+    continue
+  }
+
+  try {
+    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+    Move-Item -LiteralPath $downloaded -Destination $target -Force
+    if ((Test-Path -LiteralPath $target) -and -not (Test-Path -LiteralPath $downloaded)) {
+      exit 0
+    }
+  } catch {
+  }
+
+  Start-Sleep -Milliseconds 500
+}
+exit 1`, parentPID, escapedTarget, escapedDownloaded)
 }
