@@ -160,11 +160,15 @@ Examples:
 ```powershell
 exposely status
 exposely projects
+cd D:\code\hr-system
+exposely init --host hr-system.test
+cd D:\code\hr-system
+exposely init --url http://127.0.0.1:8000
+cd D:\code\frontend
+exposely init --start "npm run dev -- --port 5173"
 exposely project list
-exposely project add --name "My HTML" --url http://127.0.0.1:5500
-exposely project add --name "HR System" --host hr-system.test --mode quick
-exposely project edit --project "HR System" --url http://127.0.0.1:8000 --mode auto
-exposely project delete --project "HR System"
+exposely project edit --project "hr-system" --url http://127.0.0.1:8000 --mode auto
+exposely project delete --project "hr-system"
 exposely update
 exposely share --project my-site
 exposely share --url http://127.0.0.1:5500
@@ -177,34 +181,47 @@ exposely share --path D:\site --mode host-html
 
 ### Saved Project Examples
 
+`init` uses the current folder as the default project path and folder name, so it is the easiest way to add a saved project from the terminal.
+
 Laravel with Herd, Valet, Nginx, Apache, Caddy, or another local host:
 
 ```powershell
-exposely project add --name "HR System" --host hr-system.test --mode quick
+cd D:\code\hr-system
+exposely init --host hr-system.test
 ```
 
 Laravel with `php artisan serve`:
 
 ```powershell
-exposely project add --name "HR System" --url http://127.0.0.1:8000 --mode auto
+cd D:\code\hr-system
+exposely init --url http://127.0.0.1:8000
 ```
 
 Laravel where Exposely should start the local server:
 
 ```powershell
-exposely project add --name "HR System" --path D:\code\hr-system --start "php artisan serve --host=127.0.0.1 --port=8000" --mode auto
+cd D:\code\hr-system
+exposely init --start "php artisan serve --host=127.0.0.1 --port=8000"
 ```
 
 Static HTML or Live Server:
 
 ```powershell
-exposely project add --name "Landing Page" --url http://127.0.0.1:5500 --mode host-html
+cd D:\code\landing-page
+exposely init --url http://127.0.0.1:5500 --mode host-html
 ```
 
 Vite, Tailwind, React, Vue, or another frontend dev server:
 
 ```powershell
-exposely project add --name "Frontend App" --path D:\code\frontend --start "npm run dev -- --port 5173" --mode auto
+cd D:\code\frontend
+exposely init --start "npm run dev -- --port 5173"
+```
+
+If you need full control over the saved name or path, you can still use the explicit command:
+
+```powershell
+exposely project add --name "HR System" --path D:\code\hr-system --host hr-system.test --mode quick
 ```
 
 ## How It Works

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -78,6 +79,34 @@ func runProjectAddCommand(runner *cliRunner, args []string) error {
 	return nil
 }
 
+func runInitCommand(runner *cliRunner, args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(flag.CommandLine.Output())
+
+	values := bindProjectFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	project := runner.projectFromFlags(values)
+	project = runner.applyInitDefaults(project)
+
+	mode, err := inferManualShareMode(strings.TrimSpace(values.mode), project)
+	if err != nil {
+		return errors.New(`init requires one of --host, --url, or --start`)
+	}
+	project.ShareMode = mode
+
+	saved, err := runner.createProject(project)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Initialized project %q (%s)\n", saved.DisplayName, saved.ID)
+	fmt.Printf("%s\n", runner.projectSummary(saved))
+	return nil
+}
+
 func runProjectEditCommand(runner *cliRunner, args []string) error {
 	fs := flag.NewFlagSet("project edit", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
@@ -143,6 +172,17 @@ func bindProjectFlags(fs *flag.FlagSet) *projectFlagValues {
 	return values
 }
 
+func (r *cliRunner) projectFromFlags(values *projectFlagValues) models.ProjectPreset {
+	return models.ProjectPreset{
+		DisplayName:  strings.TrimSpace(values.name),
+		LocalHost:    strings.TrimSpace(values.localHost),
+		ProjectPath:  strings.TrimSpace(values.projectPath),
+		LocalURL:     strings.TrimSpace(values.localURL),
+		StartCommand: strings.TrimSpace(values.start),
+		Subdomain:    strings.TrimSpace(strings.ToLower(values.subdomain)),
+	}
+}
+
 func visitedFlags(fs *flag.FlagSet) map[string]bool {
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) {
@@ -177,6 +217,16 @@ func applyProjectFlagValues(project *models.ProjectPreset, values *projectFlagVa
 	if visited["subdomain"] {
 		project.Subdomain = strings.TrimSpace(strings.ToLower(values.subdomain))
 	}
+}
+
+func (r *cliRunner) applyInitDefaults(project models.ProjectPreset) models.ProjectPreset {
+	if strings.TrimSpace(project.ProjectPath) == "" {
+		project.ProjectPath = r.workDir
+	}
+	if strings.TrimSpace(project.DisplayName) == "" {
+		project.DisplayName = defaultProjectNameFromPath(project.ProjectPath)
+	}
+	return project
 }
 
 func (r *cliRunner) createProject(project models.ProjectPreset) (models.ProjectPreset, error) {
@@ -295,4 +345,17 @@ func ensureCLIProjectID(existing string) string {
 		return fmt.Sprintf("project-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(bytes)
+}
+
+func defaultProjectNameFromPath(projectPath string) string {
+	trimmed := strings.TrimSpace(projectPath)
+	if trimmed == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(trimmed)
+	base := strings.TrimSpace(filepath.Base(cleaned))
+	if base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return base
 }

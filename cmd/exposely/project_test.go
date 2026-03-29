@@ -67,3 +67,37 @@ func TestApplyProjectFlagValuesAllowsClearingFields(t *testing.T) {
 		t.Fatalf("expected lowercase subdomain, got %q", project.Subdomain)
 	}
 }
+
+func TestDefaultProjectNameFromPathUsesFolderName(t *testing.T) {
+	got := defaultProjectNameFromPath(`D:\code\hr-system`)
+	if got != "hr-system" {
+		t.Fatalf("expected folder name, got %q", got)
+	}
+}
+
+func TestApplyInitDefaultsUsesCurrentWorkingDirectory(t *testing.T) {
+	runner := &cliRunner{workDir: `D:\code\hr-system`}
+	project := runner.applyInitDefaults(models.ProjectPreset{})
+
+	if project.ProjectPath != `D:\code\hr-system` {
+		t.Fatalf("expected cwd as project path, got %q", project.ProjectPath)
+	}
+	if project.DisplayName != "hr-system" {
+		t.Fatalf("expected folder name as display name, got %q", project.DisplayName)
+	}
+}
+
+func TestApplyInitDefaultsPreservesExplicitValues(t *testing.T) {
+	runner := &cliRunner{workDir: `D:\code\hr-system`}
+	project := runner.applyInitDefaults(models.ProjectPreset{
+		DisplayName: "HR System",
+		ProjectPath: `D:\code\custom-path`,
+	})
+
+	if project.ProjectPath != `D:\code\custom-path` {
+		t.Fatalf("expected explicit project path to be preserved, got %q", project.ProjectPath)
+	}
+	if project.DisplayName != "HR System" {
+		t.Fatalf("expected explicit display name to be preserved, got %q", project.DisplayName)
+	}
+}
