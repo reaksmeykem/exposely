@@ -10,7 +10,7 @@ import (
 	"github.com/reaksmeykem/exposely/internal/models"
 )
 
-const cliVersion = "1.0.13"
+const cliVersion = "1.0.14"
 const cliRepoOwner = "reaksmeykem"
 const cliRepoName = "exposely"
 
