@@ -329,10 +329,7 @@ func (r *cliRunner) startProjectCommand(projectDir, commandText string) (<-chan 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/C", commandText)
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
+		cmd.SysProcAttr = windowsHiddenProcessAttrs()
 	} else {
 		cmd = exec.Command("sh", "-lc", commandText)
 	}
@@ -595,6 +592,16 @@ func randomCLISubdomain() string {
 		return fmt.Sprintf("share-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(bytes)
+}
+
+func windowsHiddenProcessAttrs() *syscall.SysProcAttr {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000,
+	}
 }
 
 func cliSupportsColor() bool {

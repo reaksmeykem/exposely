@@ -160,12 +160,15 @@ Examples:
 ```powershell
 exposely status
 exposely projects
+exposely update
 exposely share --project my-site
 exposely share --url http://127.0.0.1:5500
 exposely share --path D:\site --mode host-html
 ```
 
 `share` runs in the foreground and keeps the tunnel alive until you stop it with `Ctrl+C`.
+
+`update` downloads the latest CLI release from GitHub and replaces the current executable on Windows.
 
 ## How It Works
 

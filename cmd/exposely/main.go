@@ -11,6 +11,8 @@ import (
 )
 
 const cliVersion = "1.0.13"
+const cliRepoOwner = "reaksmeykem"
+const cliRepoName = "exposely"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,6 +40,10 @@ func main() {
 		}
 	case "projects":
 		if err := runner.printProjects(); err != nil {
+			exitWithError(err)
+		}
+	case "update", "upgrade", "self-update":
+		if err := runner.selfUpdate(); err != nil {
 			exitWithError(err)
 		}
 	case "share":
@@ -161,13 +167,15 @@ Usage:
   exposely share --path D:\site --mode host-html
   exposely share --path D:\app --mode auto --start "npm run dev -- --port 4173"
   exposely share --host app.test --mode stable --subdomain my-app
+  exposely update
   exposely version
 
 Notes:
   - "share" runs in the foreground and keeps the tunnel alive until Ctrl+C.
   - saved projects are loaded from the same settings file used by the desktop app.
   - quick, auto, and host-html modes create ephemeral public URLs.
-  - stable and random-domain modes require a configured Cloudflare domain and local host.`)
+  - stable and random-domain modes require a configured Cloudflare domain and local host.
+  - "update" downloads the latest CLI release from GitHub and replaces the current executable.`)
 }
 
 func exitWithError(err error) {
