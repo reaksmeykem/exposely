@@ -36,6 +36,7 @@ export const api = {
   openConfigFile: (): Promise<void> => appBinding().OpenConfigFile(),
   openSettingsFile: (): Promise<void> => appBinding().OpenSettingsFile(),
   openLatestRelease: (): Promise<void> => (appBinding() as AppBindings & { OpenLatestRelease(): Promise<void> }).OpenLatestRelease(),
+  installLatestUpdate: (): Promise<string> => (appBinding() as AppBindings & { InstallLatestUpdate(): Promise<string> }).InstallLatestUpdate(),
   browseProjectFolder: (currentPath: string): Promise<string> => appBinding().BrowseProjectFolder(currentPath),
   testProject: (id: string): Promise<string> => appBinding().TestProject(id),
 };

@@ -240,6 +240,7 @@ function updateBanner(appState: AppState): string {
         <p>${escapeHtml(update.message || `You are using v${update.currentVersion}.`)}</p>
       </div>
       <div class="install-banner-action">
+        <button type="button" data-action="install-latest-update">Update Now</button>
         <button type="button" data-action="open-latest-release">Open Release</button>
       </div>
     </section>
@@ -692,6 +693,7 @@ function render() {
                         <p style="margin-top: 10px; color: var(--text-secondary);">${escapeHtml(appState.update.message || 'The app can check GitHub releases for new versions.')}</p>
                         <div class="action-row" style="margin-top: 14px;">
                           <button type="button" class="secondary" data-action="check-updates">Check Now</button>
+                          <button type="button" ${appState.update.available ? '' : 'disabled'} data-action="install-latest-update">Update Now</button>
                           <button type="button" ${appState.update.releaseUrl ? '' : 'disabled'} data-action="open-latest-release">Open Release</button>
                         </div>
                       </div>
@@ -1053,6 +1055,14 @@ async function handleAction(action: string, id: string | null) {
       return;
     case 'open-latest-release':
       await withAction('Opening latest release...', () => api.openLatestRelease());
+      return;
+    case 'install-latest-update':
+      {
+        const message = await withAction('Downloading and opening the latest update...', () => api.installLatestUpdate());
+        if (typeof message === 'string' && message) {
+          setNotice('success', message);
+        }
+      }
       return;
     case 'check-updates': {
       const next = await withAction('Checking for updates...', () => api.checkForUpdates());

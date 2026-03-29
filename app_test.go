@@ -120,3 +120,37 @@ func TestNormalizeShareModePreservesStableAndRandom(t *testing.T) {
 		t.Fatalf("expected random-domain mode to be preserved, got %q", got)
 	}
 }
+
+func TestSelectDesktopUpdateAssetPrefersInstaller(t *testing.T) {
+	release := githubLatestRelease{
+		Assets: []githubReleaseAsset{
+			{Name: "Exposely.exe", BrowserDownloadURL: "https://example.com/portable.exe"},
+			{Name: "Exposely-amd64-installer.exe", BrowserDownloadURL: "https://example.com/installer.exe"},
+		},
+	}
+
+	asset, err := selectDesktopUpdateAsset(release)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if asset.Name != "Exposely-amd64-installer.exe" {
+		t.Fatalf("expected installer asset to be preferred, got %q", asset.Name)
+	}
+}
+
+func TestSelectDesktopUpdateAssetFallsBackToPortableExe(t *testing.T) {
+	release := githubLatestRelease{
+		Assets: []githubReleaseAsset{
+			{Name: "exposely-cli.exe", BrowserDownloadURL: "https://example.com/cli.exe"},
+			{Name: "Exposely.exe", BrowserDownloadURL: "https://example.com/portable.exe"},
+		},
+	}
+
+	asset, err := selectDesktopUpdateAsset(release)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if asset.Name != "Exposely.exe" {
+		t.Fatalf("expected portable desktop exe fallback, got %q", asset.Name)
+	}
+}

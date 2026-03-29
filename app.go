@@ -186,6 +186,50 @@ func (a *App) OpenLatestRelease() error {
 	return openExternal(target)
 }
 
+func (a *App) InstallLatestUpdate() (string, error) {
+	if runtime.GOOS != "windows" {
+		return "", errors.New("desktop auto-update is currently supported on Windows only")
+	}
+
+	latest, err := fetchLatestReleaseInfo()
+	if err != nil {
+		return "", err
+	}
+	if !isVersionNewer(version.Version, latest.TagName) {
+		return "", errors.New("you are already using the latest version")
+	}
+
+	asset, err := selectDesktopUpdateAsset(latest)
+	if err != nil {
+		return "", err
+	}
+
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "updater",
+		Level:     "info",
+		Message:   fmt.Sprintf("Downloading desktop update %s (%s)", latest.TagName, asset.Name),
+	})
+
+	downloadPath, err := a.downloadReleaseAsset(latest.TagName, asset)
+	if err != nil {
+		return "", err
+	}
+
+	if err := launchExecutable(downloadPath); err != nil {
+		return "", err
+	}
+
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "updater",
+		Level:     "info",
+		Message:   fmt.Sprintf("Launched update installer: %s", downloadPath),
+	})
+
+	return fmt.Sprintf("Opened %s. Finish the installer to update Exposely.", asset.Name), nil
+}
+
 func (a *App) SaveSettings(input models.AppSettings) (models.AppState, error) {
 	if err := a.requireAdmin(); err != nil {
 		return models.AppState{}, err
@@ -1496,8 +1540,14 @@ func openExternal(target string) error {
 }
 
 type githubLatestRelease struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
+	TagName string               `json:"tag_name"`
+	HTMLURL string               `json:"html_url"`
+	Assets  []githubReleaseAsset `json:"assets"`
+}
+
+type githubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
 func fetchLatestReleaseInfo() (githubLatestRelease, error) {
@@ -1524,6 +1574,96 @@ func fetchLatestReleaseInfo() (githubLatestRelease, error) {
 		return githubLatestRelease{}, err
 	}
 	return release, nil
+}
+
+func selectDesktopUpdateAsset(release githubLatestRelease) (githubReleaseAsset, error) {
+	preferredNames := []string{
+		"Exposely-amd64-installer.exe",
+		"Exposely.exe",
+	}
+
+	for _, preferred := range preferredNames {
+		for _, asset := range release.Assets {
+			if strings.EqualFold(strings.TrimSpace(asset.Name), preferred) && strings.TrimSpace(asset.BrowserDownloadURL) != "" {
+				return asset, nil
+			}
+		}
+	}
+
+	for _, asset := range release.Assets {
+		name := strings.TrimSpace(asset.Name)
+		lowerName := strings.ToLower(name)
+		if lowerName == "exposely.exe" && strings.TrimSpace(asset.BrowserDownloadURL) != "" {
+			return asset, nil
+		}
+	}
+
+	return githubReleaseAsset{}, errors.New("no Windows desktop update asset was found in the latest release")
+}
+
+func (a *App) downloadReleaseAsset(versionTag string, asset githubReleaseAsset) (string, error) {
+	client := &http.Client{Timeout: 5 * time.Minute}
+	req, err := http.NewRequest(http.MethodGet, asset.BrowserDownloadURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	req.Header.Set("User-Agent", "exposely-ui/"+version.Version)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("failed to download update asset: HTTP %d", resp.StatusCode)
+	}
+
+	downloadDir := filepath.Join(os.TempDir(), "Exposely-Updates")
+	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+		return "", err
+	}
+
+	baseName := strings.TrimSpace(asset.Name)
+	if baseName == "" {
+		baseName = "Exposely-update.exe"
+	}
+	finalPath := filepath.Join(downloadDir, strings.TrimPrefix(versionTag, "v")+"-"+baseName)
+	tempPath := finalPath + ".download"
+
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return "", err
+	}
+
+	_, copyErr := io.Copy(file, resp.Body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		_ = os.Remove(tempPath)
+		return "", copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tempPath)
+		return "", closeErr
+	}
+
+	if err := os.Remove(finalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	if err := os.Rename(tempPath, finalPath); err != nil {
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+
+	return finalPath, nil
+}
+
+func launchExecutable(path string) error {
+	cmd := exec.Command(path)
+	cmd.Dir = filepath.Dir(path)
+	return cmd.Start()
 }
 
 func (a *App) currentUpdateInfo() models.UpdateInfo {
