@@ -183,9 +183,9 @@ exposely projects
 exposely update
 ```
 
-### One-Shot Sharing Examples
+### Share Examples
 
-The simplest CLI flow is: `cd` into the project, then run one `exposely share ...` command.
+Use these commands directly from the current project folder.
 
 Static HTML folder with `index.html`:
 
