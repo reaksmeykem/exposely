@@ -180,15 +180,12 @@ Other useful commands:
 ```powershell
 exposely status
 exposely projects
-exposely project list
-exposely project edit --project "hr-system" --url http://127.0.0.1:8000 --mode auto
-exposely project delete --project "hr-system"
 exposely update
 ```
 
 ### One-Shot Sharing Examples
 
-If you do not want to save a project first, you can also share directly from the current folder:
+The simplest CLI flow is: `cd` into the project, then run one `exposely share ...` command.
 
 Static HTML folder with `index.html`:
 
@@ -216,57 +213,6 @@ Frontend app where Exposely should start the dev server:
 ```powershell
 cd D:\code\frontend
 exposely share --start "npm run dev -- --port 5173"
-```
-
-### Saved Project Examples
-
-If you want to save a project preset for reuse later, use `init` from inside the project folder. `init` uses the current folder as the default project path and folder name.
-
-Laravel with Herd, Valet, Nginx, Apache, Caddy, or another local host:
-
-```powershell
-cd D:\code\hr-system
-exposely init --host hr-system.test
-```
-
-Laravel with `php artisan serve`:
-
-```powershell
-cd D:\code\hr-system
-exposely init --url http://127.0.0.1:8000
-```
-
-Laravel where Exposely should start the local server:
-
-```powershell
-cd D:\code\hr-system
-exposely init --start "php artisan serve --host=127.0.0.1 --port=8000"
-```
-
-Static HTML or Live Server:
-
-```powershell
-cd D:\code\landing-page
-exposely init --url http://127.0.0.1:5500 --mode host-html
-```
-
-Vite, Tailwind, React, Vue, or another frontend dev server:
-
-```powershell
-cd D:\code\frontend
-exposely init --start "npm run dev -- --port 5173"
-```
-
-Then reuse the saved project with:
-
-```powershell
-exposely share --project hr-system
-```
-
-If you need full control over the saved name or path, you can still use the explicit command:
-
-```powershell
-exposely project add --name "HR System" --path D:\code\hr-system --host hr-system.test --mode quick
 ```
 
 ## How It Works
