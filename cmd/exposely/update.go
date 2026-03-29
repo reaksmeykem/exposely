@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -136,10 +137,23 @@ func downloadFile(downloadURL, destination string) error {
 
 func launchWindowsReplace(targetPath, downloadedPath string) error {
 	targetDir := filepath.Dir(targetPath)
-	command := fmt.Sprintf(`ping 127.0.0.1 -n 2 >nul && move /Y "%s" "%s" >nul`, downloadedPath, targetPath)
-	cmd := exec.Command("cmd", "/C", command)
+	escapedTarget := strconv.Quote(targetPath)
+	escapedDownloaded := strconv.Quote(downloadedPath)
+	script := fmt.Sprintf(`$ErrorActionPreference = 'SilentlyContinue'
+$target = %s
+$downloaded = %s
+Start-Sleep -Milliseconds 1200
+for ($i = 0; $i -lt 40; $i++) {
+  try {
+    Move-Item -LiteralPath $downloaded -Destination $target -Force
+    exit 0
+  } catch {
+    Start-Sleep -Milliseconds 500
+  }
+}
+exit 1`, escapedTarget, escapedDownloaded)
+	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", script)
 	cmd.Dir = targetDir
 	cmd.SysProcAttr = windowsHiddenProcessAttrs()
 	return cmd.Start()
 }
-
