@@ -81,6 +81,31 @@ wails build
 
 The production executable is written to `build/bin/`.
 
+## Windows Installer Build
+
+To build the Windows installer, install NSIS first and make sure `makensis.exe` is available on `PATH`.
+
+Quick check:
+
+```powershell
+makensis /VERSION
+```
+
+Then build the installer with Wails:
+
+```powershell
+wails build -platform windows/amd64 -nsis
+```
+
+Expected output:
+
+- `build/bin/Exposely.exe`
+- `build/bin/Exposely-amd64-installer.exe`
+
+The NSIS installer script used by Wails is:
+
+- `build/windows/installer/project.nsi`
+
 ## CLI
 
 This repository also includes a CLI for developers who do not want the desktop UI.
