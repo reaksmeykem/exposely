@@ -319,7 +319,7 @@ function render() {
       <aside class="sidebar">
         <div class="sidebar-header">
           <div class="logo">
-            <img src="./logo.png?v=2" alt="App logo" />
+            <img src="./logo.png?v=3" alt="App logo" />
             <div class="logo-text">
               <h1>Exposely</h1>
               <div class="status-indicator tone-${statusTone(tunnelStatus)}">

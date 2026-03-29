@@ -9,6 +9,29 @@ It supports:
 - already running local URLs such as `http://127.0.0.1:5500`
 - auto-detected local projects that can use a folder, local URL, or start command
 
+## What Projects Work
+
+Exposely works best with projects that are already reachable locally in one of these ways:
+
+- a local host such as `app.test` or `my-app.local`
+- a local URL such as `http://127.0.0.1:8000`, `http://127.0.0.1:5500`, or `http://localhost:5173`
+- a static folder with `index.html`
+- a built frontend output folder such as `dist`, `build`, or `public`
+
+Common project types that work:
+
+- Laravel behind Herd, Valet, Nginx, Apache, Caddy, or another local host based setup
+- Laravel running with `php artisan serve`
+- plain HTML and static websites
+- Tailwind sites that are already built or already running locally
+- Vite apps
+- React apps
+- Vue apps
+- Svelte apps
+- other local dev servers that expose a reachable HTTP URL
+
+Projects are less likely to work if they are only raw source files with no running dev server, no build output, and no local URL yet.
+
 ## Features
 
 - Detects `cloudflared` from `PATH`, a configured path, or common Windows install locations
@@ -29,6 +52,12 @@ Auto mode can:
 - use a local host for local-server projects
 - serve a static folder or common build output such as `dist`, `build`, or `public`
 
+Use Auto when:
+
+- you want the app to figure out whether the project should use a local URL, local host, start command, or static output folder
+- you have a frontend project such as Vite, React, Vue, Svelte, or Tailwind and want one flexible mode
+- you are using `php artisan serve` or another local server running on a port
+
 ### Laravel / Local Host
 
 Use this when your app runs behind a local host such as:
@@ -37,6 +66,8 @@ Use this when your app runs behind a local host such as:
 - `my-app.local`
 - a local server fronted by Herd, Valet, or another host-based setup
 
+This mode is not limited to Herd. It works with any local setup that responds correctly when the Host header is set, including Herd, Valet, Nginx, Apache, Caddy, and similar tools.
+
 ### HTML / Static Site
 
 Use this when your project is:
@@ -44,6 +75,8 @@ Use this when your project is:
 - a static folder with `index.html`
 - a built static site
 - already running on a local URL such as `http://127.0.0.1:5500`
+
+This also works well for built Tailwind sites and other frontend output folders that contain a real `index.html`.
 
 ## Requirements
 
