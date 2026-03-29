@@ -89,7 +89,11 @@ func (r *cliRunner) printStatus() error {
 
 	fmt.Printf("Settings: %s\n", r.store.Path())
 	fmt.Printf("Config:    %s\n", r.configPath)
-	fmt.Printf("Domain:    %s\n", settingsValue.DefaultDomain)
+	if cliUsesCustomDomain(settingsValue) {
+		fmt.Printf("Domain:    %s\n", settingsValue.DefaultDomain)
+	} else {
+		fmt.Printf("Domain:    %s\n", "not used in quick tunnel mode")
+	}
 	fmt.Printf("Tunnel:    %s\n", settingsValue.TunnelName)
 	fmt.Printf("Origin:    %s\n", settingsValue.DefaultServiceURL)
 	fmt.Printf("Projects:  %d\n", len(settingsValue.Projects))
@@ -663,4 +667,18 @@ func (r *cliRunner) styleProjectType(projectType string) string {
 	default:
 		return projectType
 	}
+}
+
+func cliUsesCustomDomain(settingsValue models.AppSettings) bool {
+	domain := strings.TrimSpace(strings.ToLower(settingsValue.DefaultDomain))
+	if domain != "" && domain != "example.com" {
+		return true
+	}
+	for _, project := range settingsValue.Projects {
+		switch normalizeCLIShareMode(project.ShareMode) {
+		case models.ShareModeStable, models.ShareModeRandomDomain:
+			return true
+		}
+	}
+	return false
 }

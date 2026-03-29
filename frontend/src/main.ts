@@ -79,8 +79,13 @@ function escapeHtml(value: string): string {
 
 function formatProjectURL(project: ProjectPreset, domain: string): string {
   if (project.publicURL) return project.publicURL;
-  if (project.subdomain) return `https://${project.subdomain}.${domain}`;
+  if (project.subdomain && isMeaningfulDomain(domain)) return `https://${project.subdomain}.${domain}`;
   return '';
+}
+
+function isMeaningfulDomain(domain: string): boolean {
+  const normalized = domain.trim().toLowerCase();
+  return normalized !== '' && normalized !== 'example.com';
 }
 
 function resolvedProjectURL(project: ProjectPreset, appState: AppState): string {
