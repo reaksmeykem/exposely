@@ -245,6 +245,16 @@ GitHub Actions runs:
 
 See [.github/workflows/ci.yml](./.github/workflows/ci.yml).
 
+## GitHub Release Assets
+
+When a GitHub release is published, GitHub Actions builds the Windows release assets and uploads them to that release:
+
+- `Exposely.exe`
+- `Exposely-amd64-installer.exe`
+- `exposely-cli.exe`
+
+The release workflow is defined in [.github/workflows/release.yml](./.github/workflows/release.yml).
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md), [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md), and [SECURITY.md](./SECURITY.md).

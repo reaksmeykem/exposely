@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and upload assets for
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: "20"
+  RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  windows-assets:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: |
+          $wailsVersion = (go list -m -f "{{.Version}}" github.com/wailsapp/wails/v2).Trim()
+          if (-not $wailsVersion) {
+            throw "Failed to resolve the Wails version from go.mod."
+          }
+
+          go install "github.com/wailsapp/wails/v2/cmd/wails@$wailsVersion"
+
+          $goBin = Join-Path ((go env GOPATH).Trim()) "bin"
+          $env:Path = "$goBin;$env:Path"
+          $goBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify toolchain
+        shell: pwsh
+        run: |
+          makensis /VERSION
+          wails version
+
+      - name: Build desktop app and NSIS installer
+        shell: pwsh
+        run: wails build -platform windows/amd64 -clean -nsis
+
+      - name: Build CLI
+        shell: pwsh
+        run: go build -trimpath "-ldflags=-s -w" -o build/bin/exposely-cli.exe ./cmd/exposely
+
+      - name: Verify release assets
+        shell: pwsh
+        run: |
+          $assets = @(
+            "build/bin/Exposely.exe",
+            "build/bin/Exposely-amd64-installer.exe",
+            "build/bin/exposely-cli.exe"
+          )
+
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset)) {
+              throw "Missing release asset: $asset"
+            }
+          }
+
+      - name: Upload release assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release upload $env:RELEASE_TAG `
+            "build/bin/Exposely.exe" `
+            "build/bin/Exposely-amd64-installer.exe" `
+            "build/bin/exposely-cli.exe" `
+            --clobber
