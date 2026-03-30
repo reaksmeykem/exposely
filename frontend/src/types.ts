@@ -4,6 +4,7 @@ export interface ProjectPreset {
   id: string;
   displayName: string;
   localHost: string;
+  originURL: string;
   subdomain: string;
   publicURL: string;
   projectPath: string;

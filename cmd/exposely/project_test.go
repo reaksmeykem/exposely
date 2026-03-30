@@ -26,6 +26,7 @@ func TestApplyProjectFlagValuesAllowsClearingFields(t *testing.T) {
 	project := models.ProjectPreset{
 		DisplayName:  "Existing",
 		LocalHost:    "old.test",
+		OriginURL:    "http://127.0.0.1:80",
 		LocalURL:     "http://127.0.0.1:5500",
 		ProjectPath:  `D:\site`,
 		StartCommand: "npm run dev",
@@ -34,6 +35,7 @@ func TestApplyProjectFlagValuesAllowsClearingFields(t *testing.T) {
 	values := &projectFlagValues{
 		name:        "Updated",
 		localHost:   "",
+		originURL:   "http://127.0.0.1:8080",
 		localURL:    "",
 		projectPath: `D:\new-site`,
 		start:       "",
@@ -42,6 +44,7 @@ func TestApplyProjectFlagValuesAllowsClearingFields(t *testing.T) {
 	visited := map[string]bool{
 		"name":      true,
 		"host":      true,
+		"origin":    true,
 		"url":       true,
 		"path":      true,
 		"start":     true,
@@ -55,6 +58,9 @@ func TestApplyProjectFlagValuesAllowsClearingFields(t *testing.T) {
 	}
 	if project.LocalHost != "" {
 		t.Fatalf("expected local host to be cleared, got %q", project.LocalHost)
+	}
+	if project.OriginURL != "http://127.0.0.1:8080" {
+		t.Fatalf("expected updated origin URL, got %q", project.OriginURL)
 	}
 	if project.LocalURL != "" {
 		t.Fatalf("expected local URL to be cleared, got %q", project.LocalURL)
@@ -143,5 +149,29 @@ func TestApplyShareDefaultsDetectsHtmlFolderFromCwd(t *testing.T) {
 	}
 	if project.DisplayName != filepath.Base(workDir) {
 		t.Fatalf("expected folder name, got %q", project.DisplayName)
+	}
+}
+
+func TestInferCLIHostFromProjectPath(t *testing.T) {
+	got := inferCLIHostFromProjectPath(`D:\code\HR System`)
+	if got != "hr-system.test" {
+		t.Fatalf("unexpected inferred host: %q", got)
+	}
+}
+
+func TestDetectCLILaravelProjectDir(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "artisan"), []byte("artisan"), 0o644); err != nil {
+		t.Fatalf("failed to write artisan file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workDir, "public"), 0o755); err != nil {
+		t.Fatalf("failed to create public directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "public", "index.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatalf("failed to write Laravel front controller: %v", err)
+	}
+
+	if !detectCLILaravelProjectDir(workDir) {
+		t.Fatalf("expected Laravel project to be detected")
 	}
 }

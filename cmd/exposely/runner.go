@@ -222,6 +222,7 @@ func (r *cliRunner) normalizeProject(project models.ProjectPreset) models.Projec
 	project.ID = strings.TrimSpace(project.ID)
 	project.DisplayName = strings.TrimSpace(project.DisplayName)
 	project.LocalHost = strings.TrimSpace(project.LocalHost)
+	project.OriginURL = strings.TrimSpace(project.OriginURL)
 	project.Subdomain = strings.TrimSpace(strings.ToLower(project.Subdomain))
 	project.PublicURL = strings.TrimSpace(project.PublicURL)
 	project.ProjectPath = strings.TrimSpace(project.ProjectPath)
@@ -542,6 +543,67 @@ func detectCLIStaticSiteDir(projectDir string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func resolveCLIProjectOriginServiceURL(project models.ProjectPreset, fallback string) (string, error) {
+	if serviceURL, ok, err := normalizeCLIServiceURL(project.OriginURL); ok {
+		if err != nil {
+			return "", fmt.Errorf("invalid project origin URL: %w", err)
+		}
+		return serviceURL, nil
+	}
+	if serviceURL, ok, err := normalizeCLIServiceURL(fallback); ok {
+		if err != nil {
+			return "", fmt.Errorf("invalid default service URL: %w", err)
+		}
+		return serviceURL, nil
+	}
+	return "", errors.New("a valid origin service URL is required")
+}
+
+func inferCLIHostFromProjectPath(projectPath string) string {
+	trimmed := strings.TrimSpace(projectPath)
+	if trimmed == "" {
+		return ""
+	}
+	normalized := strings.TrimRight(trimmed, `/\`)
+	base := strings.TrimSpace(filepath.Base(normalized))
+	if base == "." || base == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	lastDash := false
+	for _, ch := range strings.ToLower(base) {
+		switch {
+		case (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'):
+			builder.WriteRune(ch)
+			lastDash = false
+		case !lastDash:
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+
+	host := strings.Trim(builder.String(), "-")
+	if host == "" {
+		return ""
+	}
+	return host + ".test"
+}
+
+func detectCLILaravelProjectDir(projectDir string) bool {
+	required := []string{
+		filepath.Join(projectDir, "artisan"),
+		filepath.Join(projectDir, "public", "index.php"),
+	}
+	for _, candidate := range required {
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 func detectCLICommandPorts(commandText string) []int {

@@ -14,6 +14,7 @@ type ProjectPreset struct {
 	ID           string    `json:"id"`
 	DisplayName  string    `json:"displayName"`
 	LocalHost    string    `json:"localHost"`
+	OriginURL    string    `json:"originURL"`
 	Subdomain    string    `json:"subdomain"`
 	PublicURL    string    `json:"publicURL"`
 	ProjectPath  string    `json:"projectPath"`

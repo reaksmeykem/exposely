@@ -61,6 +61,42 @@ func TestValidateProjectSourceForAuto(t *testing.T) {
 	}
 }
 
+func TestResolveProjectOriginServiceURLPrefersProjectOverride(t *testing.T) {
+	serviceURL, err := resolveProjectOriginServiceURL(models.ProjectPreset{
+		OriginURL: "http://127.0.0.1:8080/app",
+	}, "http://127.0.0.1:80")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if serviceURL != "http://127.0.0.1:8080" {
+		t.Fatalf("unexpected origin URL: %q", serviceURL)
+	}
+}
+
+func TestInferLocalHostFromProjectPath(t *testing.T) {
+	got := inferLocalHostFromProjectPath(`D:\code\HR System`)
+	if got != "hr-system.test" {
+		t.Fatalf("unexpected inferred host: %q", got)
+	}
+}
+
+func TestLooksLikeLaravelProjectDir(t *testing.T) {
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "artisan"), []byte("artisan"), 0o644); err != nil {
+		t.Fatalf("failed to write artisan file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, "public"), 0o755); err != nil {
+		t.Fatalf("failed to create public directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "public", "index.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatalf("failed to write Laravel front controller: %v", err)
+	}
+
+	if !looksLikeLaravelProjectDir(projectDir) {
+		t.Fatalf("expected Laravel project to be detected")
+	}
+}
+
 func TestResolveHTMLOriginUsesBuildOutputDirectory(t *testing.T) {
 	projectDir := t.TempDir()
 	distDir := filepath.Join(projectDir, "dist")

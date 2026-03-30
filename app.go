@@ -252,7 +252,7 @@ func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
 		return models.AppState{}, errors.New("display name is required")
 	}
 	if normalizeShareMode(input.ShareMode) == models.ShareModeQuick && strings.TrimSpace(input.LocalHost) == "" {
-		return models.AppState{}, errors.New("local herd hostname is required")
+		return models.AppState{}, errors.New("local host is required")
 	}
 	if strings.TrimSpace(input.StartCommand) != "" && strings.TrimSpace(input.ProjectPath) == "" {
 		return models.AppState{}, errors.New("project folder path is required when a start command is set")
@@ -264,6 +264,7 @@ func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
 	input.ID = ensureID(input.ID)
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	input.LocalHost = strings.TrimSpace(input.LocalHost)
+	input.OriginURL = strings.TrimSpace(input.OriginURL)
 	input.ProjectPath = strings.TrimSpace(input.ProjectPath)
 	input.LocalURL = strings.TrimSpace(input.LocalURL)
 	input.StartCommand = strings.TrimSpace(input.StartCommand)
@@ -410,6 +411,14 @@ func (a *App) startAutoTunnel(project models.ProjectPreset) (models.AppState, er
 	projectDir, err := a.resolveProjectDirectory(project.ProjectPath)
 	if err != nil {
 		return models.AppState{}, err
+	}
+	if looksLikeLaravelProjectDir(projectDir) {
+		laravelProject := project
+		laravelProject.LocalHost = inferLocalHostFromProjectPath(projectDir)
+		if strings.TrimSpace(laravelProject.LocalHost) == "" {
+			return models.AppState{}, errors.New("Auto mode detected a Laravel project but could not infer a local host. Set a local host such as app.test")
+		}
+		return a.startQuickTunnel(laravelProject)
 	}
 	if staticDir, ok := detectStaticSiteDir(projectDir); ok {
 		serviceURL, port, server, err := a.serveStaticDirectory(staticDir)
@@ -1122,7 +1131,11 @@ func (a *App) TestProject(projectID string) (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodGet, settingsValue.DefaultServiceURL, nil)
+	serviceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodGet, serviceURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -1132,11 +1145,11 @@ func (a *App) TestProject(projectID string) (string, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to reach local service %s with Host %s: %w", settingsValue.DefaultServiceURL, project.LocalHost, err)
+		return "", fmt.Errorf("failed to reach local service %s with Host %s: %w", serviceURL, project.LocalHost, err)
 	}
 	defer resp.Body.Close()
 
-	message := fmt.Sprintf("%s responded with HTTP %d for host %s", settingsValue.DefaultServiceURL, resp.StatusCode, project.LocalHost)
+	message := fmt.Sprintf("%s responded with HTTP %d for host %s", serviceURL, resp.StatusCode, project.LocalHost)
 	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "local", Level: "info", Message: message})
 	return message, nil
 }
@@ -1182,9 +1195,13 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 	}
 	cfg.Tunnel = info.ID
 	cfg.CredentialsFile = info.CredentialsFile
+	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	if err != nil {
+		return models.AppState{}, err
+	}
 	cloudflare.UpsertIngressRule(&cfg, cloudflare.IngressRule{
 		Hostname: hostname,
-		Service:  settingsValue.DefaultServiceURL,
+		Service:  originServiceURL,
 		OriginRequest: &cloudflare.OriginRequest{
 			HTTPHostHeader: project.LocalHost,
 		},
@@ -1229,7 +1246,11 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 		_ = a.manager.StopTunnel()
 	}
 	a.stopProjectCommand()
-	if err := a.manager.StartQuickTunnel(path, settingsValue.DefaultServiceURL, project.LocalHost); err != nil {
+	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	if err != nil {
+		return models.AppState{}, err
+	}
+	if err := a.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost); err != nil {
 		return models.AppState{}, err
 	}
 	return a.RefreshState()
@@ -1339,6 +1360,7 @@ func (a *App) normalizeSettings(input models.AppSettings) models.AppSettings {
 		output.Projects[i].ID = ensureID(output.Projects[i].ID)
 		output.Projects[i].DisplayName = strings.TrimSpace(output.Projects[i].DisplayName)
 		output.Projects[i].LocalHost = strings.TrimSpace(output.Projects[i].LocalHost)
+		output.Projects[i].OriginURL = strings.TrimSpace(output.Projects[i].OriginURL)
 		output.Projects[i].ProjectPath = strings.TrimSpace(output.Projects[i].ProjectPath)
 		output.Projects[i].LocalURL = strings.TrimSpace(output.Projects[i].LocalURL)
 		output.Projects[i].StartCommand = strings.TrimSpace(output.Projects[i].StartCommand)
@@ -1394,6 +1416,67 @@ func (a *App) licensePublicKey() ([]byte, error) {
 
 func (a *App) requireAdmin() error {
 	return nil
+}
+
+func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback string) (string, error) {
+	if serviceURL, ok, err := normalizeServiceURL(project.OriginURL); ok {
+		if err != nil {
+			return "", fmt.Errorf("invalid project origin URL: %w", err)
+		}
+		return serviceURL, nil
+	}
+	if serviceURL, ok, err := normalizeServiceURL(fallback); ok {
+		if err != nil {
+			return "", fmt.Errorf("invalid default service URL: %w", err)
+		}
+		return serviceURL, nil
+	}
+	return "", errors.New("a valid origin service URL is required")
+}
+
+func inferLocalHostFromProjectPath(projectPath string) string {
+	trimmed := strings.TrimSpace(projectPath)
+	if trimmed == "" {
+		return ""
+	}
+	normalized := strings.TrimRight(trimmed, `/\`)
+	base := strings.TrimSpace(filepath.Base(normalized))
+	if base == "." || base == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	lastDash := false
+	for _, ch := range strings.ToLower(base) {
+		switch {
+		case (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'):
+			builder.WriteRune(ch)
+			lastDash = false
+		case !lastDash:
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+
+	host := strings.Trim(builder.String(), "-")
+	if host == "" {
+		return ""
+	}
+	return host + ".test"
+}
+
+func looksLikeLaravelProjectDir(projectDir string) bool {
+	required := []string{
+		filepath.Join(projectDir, "artisan"),
+		filepath.Join(projectDir, "public", "index.php"),
+	}
+	for _, candidate := range required {
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) isAdminLicensed() bool {

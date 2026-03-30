@@ -22,22 +22,19 @@ func (r *cliRunner) shareSavedProject(projectRef string) error {
 	}
 
 	fmt.Printf("Sharing project %q (%s)\n", project.DisplayName, project.ShareMode)
-	return r.shareProjectWithSettings(settingsValue, project, "")
+	return r.shareProjectWithSettings(settingsValue, project)
 }
 
-func (r *cliRunner) shareProject(project models.ProjectPreset, serviceURLOverride string) error {
+func (r *cliRunner) shareProject(project models.ProjectPreset) error {
 	settingsValue, err := r.store.Load()
 	if err != nil {
 		return err
 	}
-	return r.shareProjectWithSettings(settingsValue, project, serviceURLOverride)
+	return r.shareProjectWithSettings(settingsValue, project)
 }
 
-func (r *cliRunner) shareProjectWithSettings(settingsValue models.AppSettings, project models.ProjectPreset, serviceURLOverride string) error {
+func (r *cliRunner) shareProjectWithSettings(settingsValue models.AppSettings, project models.ProjectPreset) error {
 	settingsValue = r.normalizeSettings(settingsValue)
-	if strings.TrimSpace(serviceURLOverride) != "" {
-		settingsValue.DefaultServiceURL = strings.TrimSpace(serviceURLOverride)
-	}
 	project = r.normalizeProject(project)
 
 	if strings.TrimSpace(project.DisplayName) == "" {
@@ -127,6 +124,14 @@ func (r *cliRunner) startAutoTunnel(settingsValue models.AppSettings, project mo
 	if err != nil {
 		return err
 	}
+	if detectCLILaravelProjectDir(projectDir) {
+		laravelProject := project
+		laravelProject.LocalHost = inferCLIHostFromProjectPath(projectDir)
+		if strings.TrimSpace(laravelProject.LocalHost) == "" {
+			return errors.New("Auto mode detected a Laravel project but could not infer a local host. Set --host explicitly")
+		}
+		return r.startQuickTunnel(settingsValue, laravelProject)
+	}
 	staticDir, ok := detectCLIStaticSiteDir(projectDir)
 	if !ok {
 		return errors.New("Auto mode could not determine how to run this project. Set a local URL, set a start command, provide a local host, or point to a folder with index.html/dist/build/public output")
@@ -151,7 +156,11 @@ func (r *cliRunner) startQuickTunnel(settingsValue models.AppSettings, project m
 	if err != nil {
 		return err
 	}
-	if err := r.manager.StartQuickTunnel(path, settingsValue.DefaultServiceURL, project.LocalHost); err != nil {
+	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	if err != nil {
+		return err
+	}
+	if err := r.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost); err != nil {
 		return err
 	}
 	return r.waitUntilInterrupted()
@@ -187,9 +196,13 @@ func (r *cliRunner) shareProjectThroughNamedTunnel(settingsValue models.AppSetti
 	}
 	cfg.Tunnel = info.ID
 	cfg.CredentialsFile = info.CredentialsFile
+	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	if err != nil {
+		return err
+	}
 	cloudflare.UpsertIngressRule(&cfg, cloudflare.IngressRule{
 		Hostname: hostname,
-		Service:  settingsValue.DefaultServiceURL,
+		Service:  originServiceURL,
 		OriginRequest: &cloudflare.OriginRequest{
 			HTTPHostHeader: project.LocalHost,
 		},

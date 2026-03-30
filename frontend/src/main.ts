@@ -31,6 +31,7 @@ const blankProject = (): ProjectPreset => ({
   id: '',
   displayName: '',
   localHost: '',
+  originURL: '',
   subdomain: '',
   publicURL: '',
   projectPath: '',
@@ -506,6 +507,11 @@ function render() {
                       : ''
                   }
                   ${
+                    state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto'
+                      ? `<label>Origin URL (optional)<input name="originURL" value="${escapeHtml(state.editorProject.originURL)}" placeholder="http://127.0.0.1:80" /></label>`
+                      : ''
+                  }
+                  ${
                     state.editorProject.shareMode === 'auto'
                       ? `<label class="wide">Start command (optional)<input name="startCommand" value="${escapeHtml(state.editorProject.startCommand)}" placeholder="npm run dev -- --port 4173" /></label>`
                       : ''
@@ -528,7 +534,7 @@ function render() {
                            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
                            <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                          </svg>
-                         <span>Auto mode can use a local URL, run a start command and detect the dev server, use a local host, or serve a static folder/build output.</span>
+                         <span>Auto mode can use a local URL, run a start command and detect the dev server, use a local host, auto-detect Laravel folders, or serve a static folder/build output.</span>
                         </div>
                         `
                        : `
@@ -750,6 +756,7 @@ function syncEditorFromForm() {
     id: formValue(projectForm, 'id'),
     displayName: formValue(projectForm, 'displayName'),
     localHost,
+    originURL: formValue(projectForm, 'originURL'),
     projectPath,
     localURL,
     startCommand,
@@ -818,7 +825,7 @@ function bindForms() {
     const target = event.target as HTMLInputElement | HTMLSelectElement | null;
     if (!target) return;
 
-    if (target.name === 'shareMode' || target.name === 'projectPath' || target.name === 'localHost' || target.name === 'localURL' || target.name === 'startCommand') {
+    if (target.name === 'shareMode' || target.name === 'projectPath' || target.name === 'localHost' || target.name === 'originURL' || target.name === 'localURL' || target.name === 'startCommand') {
       syncEditorFromForm();
       render();
     }
@@ -830,6 +837,7 @@ function bindForms() {
       id: formValue(projectForm, 'id'),
       displayName: formValue(projectForm, 'displayName'),
       localHost: formValue(projectForm, 'localHost'),
+      originURL: formValue(projectForm, 'originURL'),
       projectPath: formValue(projectForm, 'projectPath'),
       localURL: formValue(projectForm, 'localURL'),
       startCommand: formValue(projectForm, 'startCommand'),
@@ -844,38 +852,6 @@ function bindForms() {
     const savedProjectId = payload.id || (next.settings.projects[next.settings.projects.length - 1]?.id ?? null);
     state.selectedProjectId = savedProjectId;
     state.editorOpen = false;
-
-    if (!savedProjectId) {
-      setNotice('success', 'Project preset saved');
-      return;
-    }
-
-    if (!(await confirmProjectSwitch(savedProjectId))) {
-      setNotice('success', 'Project preset saved');
-      return;
-    }
-
-    if (state.appState?.status.running && state.activeProjectId && state.activeProjectId !== savedProjectId) {
-      const stopped = await withAction('Stopping current project...', () => api.stopTunnel());
-      if (!stopped) return;
-      state.appState = stopped;
-      state.activeProjectId = null;
-    }
-
-    const shared = await withAction(
-      'Creating Cloudflare tunnel URL...',
-      () => {
-        return api.startQuickTunnel(savedProjectId);
-      },
-    );
-
-    if (shared) {
-      state.appState = shared;
-      state.activeProjectId = savedProjectId;
-      setNotice('success', 'Project saved and shared successfully');
-      return;
-    }
-
     setNotice('success', 'Project preset saved');
   });
 }

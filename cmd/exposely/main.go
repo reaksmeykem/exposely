@@ -74,6 +74,7 @@ func runShareCommand(runner *cliRunner, args []string) error {
 	projectPath := fs.String("path", "", "Project folder path")
 	localURL := fs.String("url", "", "Local URL to expose")
 	localHost := fs.String("host", "", "Local host header for host-based apps")
+	originURL := fs.String("origin", "", "Origin URL for host-based apps, such as http://127.0.0.1:80")
 	startCommand := fs.String("start", "", "Optional local start command for auto mode")
 	subdomain := fs.String("subdomain", "", "Subdomain for stable mode")
 	serviceURL := fs.String("service-url", "", "Override origin service URL for host-based apps")
@@ -84,7 +85,7 @@ func runShareCommand(runner *cliRunner, args []string) error {
 	}
 
 	if strings.TrimSpace(*projectRef) != "" {
-		if hasManualShareOverrides(*modeValue, *projectPath, *localURL, *localHost, *startCommand, *subdomain, *serviceURL, *displayName) {
+		if hasManualShareOverrides(*modeValue, *projectPath, *localURL, *localHost, *originURL, *startCommand, *subdomain, *serviceURL, *displayName) {
 			return errors.New("use either --project or manual share flags, not both")
 		}
 		return runner.shareSavedProject(*projectRef)
@@ -93,10 +94,14 @@ func runShareCommand(runner *cliRunner, args []string) error {
 	project := models.ProjectPreset{
 		DisplayName:  strings.TrimSpace(*displayName),
 		LocalHost:    strings.TrimSpace(*localHost),
+		OriginURL:    strings.TrimSpace(*originURL),
 		Subdomain:    strings.TrimSpace(strings.ToLower(*subdomain)),
 		ProjectPath:  strings.TrimSpace(*projectPath),
 		LocalURL:     strings.TrimSpace(*localURL),
 		StartCommand: strings.TrimSpace(*startCommand),
+	}
+	if strings.TrimSpace(*serviceURL) != "" {
+		project.OriginURL = strings.TrimSpace(*serviceURL)
 	}
 	project, preparedMode, err := runner.applyShareDefaults(project, strings.TrimSpace(*modeValue))
 	if err != nil {
@@ -112,11 +117,11 @@ func runShareCommand(runner *cliRunner, args []string) error {
 		project.DisplayName = defaultManualDisplayName(project)
 	}
 
-	return runner.shareProject(project, strings.TrimSpace(*serviceURL))
+	return runner.shareProject(project)
 }
 
-func hasManualShareOverrides(modeValue, projectPath, localURL, localHost, startCommand, subdomain, serviceURL, displayName string) bool {
-	values := []string{modeValue, projectPath, localURL, localHost, startCommand, subdomain, serviceURL, displayName}
+func hasManualShareOverrides(modeValue, projectPath, localURL, localHost, originURL, startCommand, subdomain, serviceURL, displayName string) bool {
+	values := []string{modeValue, projectPath, localURL, localHost, originURL, startCommand, subdomain, serviceURL, displayName}
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
 			return true

@@ -20,6 +20,7 @@ type projectFlagValues struct {
 	projectPath string
 	localURL    string
 	localHost   string
+	originURL   string
 	start       string
 	subdomain   string
 }
@@ -55,6 +56,7 @@ func runProjectAddCommand(runner *cliRunner, args []string) error {
 	project := models.ProjectPreset{
 		DisplayName:  strings.TrimSpace(values.name),
 		LocalHost:    strings.TrimSpace(values.localHost),
+		OriginURL:    strings.TrimSpace(values.originURL),
 		ProjectPath:  strings.TrimSpace(values.projectPath),
 		LocalURL:     strings.TrimSpace(values.localURL),
 		StartCommand: strings.TrimSpace(values.start),
@@ -168,6 +170,7 @@ func bindProjectFlags(fs *flag.FlagSet) *projectFlagValues {
 	fs.StringVar(&values.projectPath, "path", "", "Project folder path")
 	fs.StringVar(&values.localURL, "url", "", "Local URL to expose")
 	fs.StringVar(&values.localHost, "host", "", "Local host header for host-based apps")
+	fs.StringVar(&values.originURL, "origin", "", "Origin URL for host-based apps, such as http://127.0.0.1:80")
 	fs.StringVar(&values.start, "start", "", "Optional local start command for auto mode")
 	fs.StringVar(&values.subdomain, "subdomain", "", "Subdomain for stable mode")
 	return values
@@ -177,6 +180,7 @@ func (r *cliRunner) projectFromFlags(values *projectFlagValues) models.ProjectPr
 	return models.ProjectPreset{
 		DisplayName:  strings.TrimSpace(values.name),
 		LocalHost:    strings.TrimSpace(values.localHost),
+		OriginURL:    strings.TrimSpace(values.originURL),
 		ProjectPath:  strings.TrimSpace(values.projectPath),
 		LocalURL:     strings.TrimSpace(values.localURL),
 		StartCommand: strings.TrimSpace(values.start),
@@ -212,6 +216,9 @@ func applyProjectFlagValues(project *models.ProjectPreset, values *projectFlagVa
 	if visited["host"] {
 		project.LocalHost = strings.TrimSpace(values.localHost)
 	}
+	if visited["origin"] {
+		project.OriginURL = strings.TrimSpace(values.originURL)
+	}
 	if visited["start"] {
 		project.StartCommand = strings.TrimSpace(values.start)
 	}
@@ -234,6 +241,7 @@ func (r *cliRunner) applyShareDefaults(project models.ProjectPreset, modeValue s
 	modeValue = strings.TrimSpace(modeValue)
 	hasExplicitInput := strings.TrimSpace(project.DisplayName) != "" ||
 		strings.TrimSpace(project.LocalHost) != "" ||
+		strings.TrimSpace(project.OriginURL) != "" ||
 		strings.TrimSpace(project.LocalURL) != "" ||
 		strings.TrimSpace(project.ProjectPath) != "" ||
 		strings.TrimSpace(project.StartCommand) != "" ||
