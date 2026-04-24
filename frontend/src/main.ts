@@ -237,6 +237,99 @@ function statusTone(status: TunnelStatus): string {
   return 'idle';
 }
 
+function formatUptime(seconds: number): string {
+  if (!isFinite(seconds) || seconds <= 0) return '0s';
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+function formatNumber(n: number): string {
+  if (!isFinite(n) || n === 0) return '0';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return Math.round(n).toString();
+}
+
+function renderUsagePanel(status: TunnelStatus): string {
+  if (!status.running) return '';
+
+  const usage = status.usage;
+  if (!usage || !usage.available) {
+    return `
+      <div class="usage-panel usage-panel-pending">
+        <div class="usage-panel-header">
+          <span class="eyebrow">Live tunnel usage</span>
+          <span class="usage-badge">warming up</span>
+        </div>
+        <p class="usage-hint">Collecting live metrics from cloudflared... This takes a few seconds after the tunnel starts.</p>
+      </div>
+    `;
+  }
+
+  const codes = usage.responsesByCode || {};
+  const codeEntries = Object.entries(codes)
+    .filter(([, v]) => (v || 0) > 0)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  const codesHtml = codeEntries.length
+    ? codeEntries
+        .map(([code, count]) => {
+          const tone = code.startsWith('2')
+            ? 'ok'
+            : code.startsWith('3')
+              ? 'info'
+              : code.startsWith('4')
+                ? 'warn'
+                : code.startsWith('5')
+                  ? 'err'
+                  : 'muted';
+          return `<span class="usage-code usage-code-${tone}" title="HTTP ${escapeHtml(code)}">${escapeHtml(code)} · ${formatNumber(count)}</span>`;
+        })
+        .join('')
+    : '<span class="usage-code usage-code-muted">No responses yet</span>';
+
+  const edge = (usage.edgeLocations || []).filter(Boolean);
+  const edgeLabel = edge.length ? edge.join(', ') : '—';
+
+  return `
+    <div class="usage-panel">
+      <div class="usage-panel-header">
+        <span class="eyebrow">Live tunnel usage</span>
+        <span class="usage-badge usage-badge-live">live</span>
+      </div>
+      <div class="usage-grid">
+        <div class="usage-cell">
+          <span class="usage-label">Requests</span>
+          <strong>${formatNumber(usage.totalRequests)}</strong>
+          <span class="usage-sub">${formatNumber(usage.requestsPerMin)}/min</span>
+        </div>
+        <div class="usage-cell">
+          <span class="usage-label">Edge connections</span>
+          <strong>${formatNumber(usage.haConnections)}</strong>
+          <span class="usage-sub">active to Cloudflare</span>
+        </div>
+        <div class="usage-cell">
+          <span class="usage-label">In-flight</span>
+          <strong>${formatNumber(usage.activeConns)}</strong>
+          <span class="usage-sub">concurrent requests</span>
+        </div>
+        <div class="usage-cell">
+          <span class="usage-label">Uptime</span>
+          <strong>${escapeHtml(formatUptime(usage.uptimeSeconds))}</strong>
+          <span class="usage-sub">${escapeHtml(edgeLabel)}</span>
+        </div>
+      </div>
+      <div class="usage-codes">${codesHtml}</div>
+      <p class="usage-hint">Live from local cloudflared. No Cloudflare login required. Counters reset when the tunnel restarts.</p>
+    </div>
+  `;
+}
+
 function displayVersionLabel(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
@@ -615,6 +708,7 @@ function render() {
                           </div>
                         </div>
 
+                        ${renderUsagePanel(tunnelStatus)}
                       `
                       : '<p class="empty-copy">Create or select a project to start sharing.</p>'
                   }

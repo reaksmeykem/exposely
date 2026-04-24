@@ -1,4 +1,4 @@
-import type { AppSettings, AppState, ProjectPreset } from './types';
+import type { AppSettings, AppState, ProjectPreset, TunnelUsage } from './types';
 
 type AppBindings = NonNullable<NonNullable<NonNullable<typeof window.go>['main']>['App']>;
 
@@ -39,4 +39,5 @@ export const api = {
   installLatestUpdate: (): Promise<string> => (appBinding() as AppBindings & { InstallLatestUpdate(): Promise<string> }).InstallLatestUpdate(),
   browseProjectFolder: (currentPath: string): Promise<string> => appBinding().BrowseProjectFolder(currentPath),
   testProject: (id: string): Promise<string> => appBinding().TestProject(id),
+  getTunnelUsage: (): Promise<TunnelUsage> => (appBinding() as AppBindings & { GetTunnelUsage(): Promise<TunnelUsage> }).GetTunnelUsage(),
 };

@@ -50,19 +50,38 @@ type LogEntry struct {
 }
 
 type TunnelStatus struct {
-	TunnelName              string     `json:"tunnelName"`
-	TunnelID                string     `json:"tunnelId"`
-	Running                 bool       `json:"running"`
-	Mode                    string     `json:"mode"`
-	PID                     int        `json:"pid"`
-	ActiveURL               string     `json:"activeUrl"`
-	QuickURL                string     `json:"quickUrl"`
-	HTMLServerPort          int        `json:"htmlServerPort"`
-	ActiveHostnames         []string   `json:"activeHostnames"`
-	LastLogs                []LogEntry `json:"lastLogs"`
-	LastError               string     `json:"lastError"`
-	DetectedCloudflaredPath string     `json:"detectedCloudflaredPath"`
-	ConfigPath              string     `json:"configPath"`
+	TunnelName              string       `json:"tunnelName"`
+	TunnelID                string       `json:"tunnelId"`
+	Running                 bool         `json:"running"`
+	Mode                    string       `json:"mode"`
+	PID                     int          `json:"pid"`
+	ActiveURL               string       `json:"activeUrl"`
+	QuickURL                string       `json:"quickUrl"`
+	HTMLServerPort          int          `json:"htmlServerPort"`
+	ActiveHostnames         []string     `json:"activeHostnames"`
+	LastLogs                []LogEntry   `json:"lastLogs"`
+	LastError               string       `json:"lastError"`
+	DetectedCloudflaredPath string       `json:"detectedCloudflaredPath"`
+	ConfigPath              string       `json:"configPath"`
+	Usage                   *TunnelUsage `json:"usage,omitempty"`
+}
+
+// TunnelUsage captures live usage counters exposed by the local cloudflared
+// process via its Prometheus metrics endpoint. Numbers are per-process and
+// reset when the tunnel restarts. No Cloudflare account or login is required.
+type TunnelUsage struct {
+	Available       bool              `json:"available"`
+	StartedAt       string            `json:"startedAt"`
+	UptimeSeconds   int64             `json:"uptimeSeconds"`
+	TotalRequests   uint64            `json:"totalRequests"`
+	RequestsPerMin  float64           `json:"requestsPerMin"`
+	ActiveConns     int64             `json:"activeConns"`
+	HAConnections   int64             `json:"haConnections"`
+	ResponsesByCode map[string]uint64 `json:"responsesByCode,omitempty"`
+	EdgeLocations   []string          `json:"edgeLocations,omitempty"`
+	LastUpdated     string            `json:"lastUpdated"`
+	MetricsAddr     string            `json:"metricsAddr,omitempty"`
+	Note            string            `json:"note,omitempty"`
 }
 
 type AppState struct {

@@ -53,6 +53,22 @@ export interface TunnelStatus {
   lastError: string;
   detectedCloudflaredPath: string;
   configPath: string;
+  usage?: TunnelUsage | null;
+}
+
+export interface TunnelUsage {
+  available: boolean;
+  startedAt: string;
+  uptimeSeconds: number;
+  totalRequests: number;
+  requestsPerMin: number;
+  activeConns: number;
+  haConnections: number;
+  responsesByCode?: Record<string, number> | null;
+  edgeLocations?: string[] | null;
+  lastUpdated: string;
+  metricsAddr?: string;
+  note?: string;
 }
 
 export interface AppState {

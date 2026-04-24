@@ -35,12 +35,15 @@ type Manager struct {
 	logSink    func(models.LogEntry)
 	statusSink func(models.TunnelStatus)
 
-	mu         sync.Mutex
-	status     models.TunnelStatus
-	cmd        *exec.Cmd
-	stopPID    int
-	quickHomes map[int]string
-	htmlServer *http.Server
+	mu          sync.Mutex
+	status      models.TunnelStatus
+	cmd         *exec.Cmd
+	stopPID     int
+	quickHomes  map[int]string
+	htmlServer  *http.Server
+	metricsAddr string
+	startedAt   time.Time
+	usageStop   chan struct{}
 }
 
 func NewManager(configPath string, logSink func(models.LogEntry), statusSink func(models.TunnelStatus)) *Manager {
@@ -187,7 +190,12 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 		return errors.New("tunnel reference is required")
 	}
 
-	args := []string{"tunnel", "--config", configPath, "--loglevel", "info", "run", reference}
+	metricsAddr := reserveMetricsAddr(m)
+	args := []string{"tunnel", "--config", configPath, "--loglevel", "info"}
+	if metricsAddr != "" {
+		args = append(args, "--metrics", metricsAddr)
+	}
+	args = append(args, "run", reference)
 	cmd := exec.Command(cloudflaredPath, args...)
 	if runtime.GOOS == "windows" {
 		cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -223,12 +231,15 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 	m.status.QuickURL = ""
 	m.status.LastError = ""
 	m.status.ConfigPath = configPath
+	m.status.Usage = nil
+	m.startedAt = time.Now()
 	m.emitStatusLocked()
 	m.mu.Unlock()
 
 	go m.StreamPipe("cloudflared", stdout)
 	go m.StreamPipe("cloudflared", stderr)
 	go m.waitForProcess("named", cmd)
+	m.startUsagePoller()
 	logLabel := strings.TrimSpace(tunnelName)
 	if logLabel == "" {
 		logLabel = reference
@@ -254,7 +265,11 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 		return err
 	}
 
+	metricsAddr := reserveMetricsAddr(m)
 	args := quickTunnelArgs(serviceURL, hostHeader)
+	if metricsAddr != "" {
+		args = append(args, "--metrics", metricsAddr)
+	}
 
 	cmd := exec.Command(cloudflaredPath, args...)
 	if runtime.GOOS == "windows" {
@@ -298,12 +313,15 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 	m.status.QuickURL = ""
 	m.status.HTMLServerPort = htmlPort
 	m.status.LastError = ""
+	m.status.Usage = nil
+	m.startedAt = time.Now()
 	m.emitStatusLocked()
 	m.mu.Unlock()
 
 	go m.StreamPipe("cloudflared", stdout)
 	go m.StreamPipe("cloudflared", stderr)
 	go m.waitForProcess("quick", cmd)
+	m.startUsagePoller()
 	m.pushLog("cloudflared", "info", "Started quick tunnel")
 	return nil
 }
@@ -352,12 +370,18 @@ func (m *Manager) StopTunnel() error {
 		_ = m.htmlServer.Shutdown(context.Background())
 		m.htmlServer = nil
 	}
+	if m.usageStop != nil {
+		close(m.usageStop)
+		m.usageStop = nil
+	}
+	m.metricsAddr = ""
 	m.cmd = nil
 	m.status.Running = false
 	m.status.PID = 0
 	m.status.ActiveURL = ""
 	m.status.QuickURL = ""
 	m.status.HTMLServerPort = 0
+	m.status.Usage = nil
 	m.emitStatusLocked()
 	m.mu.Unlock()
 
@@ -406,6 +430,12 @@ func (m *Manager) waitForProcess(mode string, cmd *exec.Cmd) {
 		_ = m.htmlServer.Shutdown(context.Background())
 		m.htmlServer = nil
 	}
+	if m.usageStop != nil {
+		close(m.usageStop)
+		m.usageStop = nil
+	}
+	m.metricsAddr = ""
+	m.status.Usage = nil
 	expectedStop := m.stopPID != 0 && pid == m.stopPID
 	if expectedStop {
 		m.stopPID = 0
@@ -469,6 +499,90 @@ func (m *Manager) emitStatusLocked() {
 	if m.statusSink != nil {
 		m.statusSink(m.status)
 	}
+}
+
+// reserveMetricsAddr picks a free loopback port and stores it on the manager
+// so the usage poller can scrape it. Returns "" if a free port cannot be
+// found; cloudflared will simply start without a metrics endpoint in that
+// case and usage will stay unavailable.
+func reserveMetricsAddr(m *Manager) string {
+	port, err := pickFreeLoopbackPort()
+	if err != nil || port == 0 {
+		m.metricsAddr = ""
+		return ""
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	m.metricsAddr = addr
+	return addr
+}
+
+// startUsagePoller spawns a goroutine that scrapes cloudflared's /metrics
+// endpoint a few times per minute, updates status.Usage, and emits the
+// status so the UI and CLI stay live.
+func (m *Manager) startUsagePoller() {
+	m.mu.Lock()
+	if m.usageStop != nil {
+		close(m.usageStop)
+	}
+	stop := make(chan struct{})
+	m.usageStop = stop
+	addr := m.metricsAddr
+	startedAt := m.startedAt
+	m.mu.Unlock()
+
+	if addr == "" {
+		return
+	}
+
+	go func() {
+		// Give cloudflared a brief moment to bind its metrics listener.
+		select {
+		case <-time.After(1500 * time.Millisecond):
+		case <-stop:
+			return
+		}
+
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+
+		var prev *models.TunnelUsage
+		for {
+			m.mu.Lock()
+			if !m.status.Running {
+				m.mu.Unlock()
+				return
+			}
+			m.mu.Unlock()
+
+			usage, err := fetchUsage(addr, startedAt, prev)
+			if err == nil && usage != nil {
+				m.mu.Lock()
+				if m.status.Running {
+					m.status.Usage = usage
+					m.emitStatusLocked()
+				}
+				m.mu.Unlock()
+				prev = usage
+			}
+
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// Usage returns the latest usage snapshot, or nil if none is available yet.
+func (m *Manager) Usage() *models.TunnelUsage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.status.Usage == nil {
+		return nil
+	}
+	clone := *m.status.Usage
+	return &clone
 }
 
 func runCapture(executable string, args ...string) (string, string, error) {

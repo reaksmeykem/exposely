@@ -953,6 +953,20 @@ func (a *App) StopTunnel() (models.AppState, error) {
 	return a.RefreshState()
 }
 
+// GetTunnelUsage returns live usage counters (requests, response codes,
+// active edge connections, uptime) sourced from the local cloudflared
+// process. Returns an "unavailable" usage object when no tunnel is running
+// or metrics have not yet been scraped. No Cloudflare login required.
+func (a *App) GetTunnelUsage() models.TunnelUsage {
+	if usage := a.manager.Usage(); usage != nil {
+		return *usage
+	}
+	return models.TunnelUsage{
+		Available: false,
+		Note:      "Usage becomes available a few seconds after a tunnel starts.",
+	}
+}
+
 func (a *App) CreateTunnel() (models.AppState, error) {
 	if err := a.requireAdmin(); err != nil {
 		return models.AppState{}, err
