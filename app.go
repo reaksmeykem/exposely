@@ -217,6 +217,25 @@ func (a *App) InstallLatestUpdate() (string, error) {
 		return "", err
 	}
 
+	isBinary := strings.EqualFold(strings.TrimSpace(asset.Name), "Exposely.exe")
+	if isBinary {
+		exePath, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("could not determine current executable path: %w", err)
+		}
+		if err := launchWindowsReplace(os.Getpid(), exePath, downloadPath); err != nil {
+			return "", err
+		}
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "updater",
+			Level:     "info",
+			Message:   fmt.Sprintf("Scheduled replacement of %s with %s", exePath, downloadPath),
+		})
+		wruntime.Quit(a.ctx)
+		return fmt.Sprintf("Exposely will restart to complete the update to %s.", latest.TagName), nil
+	}
+
 	if err := launchExecutable(downloadPath); err != nil {
 		return "", err
 	}
@@ -228,6 +247,7 @@ func (a *App) InstallLatestUpdate() (string, error) {
 		Message:   fmt.Sprintf("Launched update installer: %s", downloadPath),
 	})
 
+	wruntime.Quit(a.ctx)
 	return fmt.Sprintf("Opened %s. Finish the installer to update Exposely.", asset.Name), nil
 }
 
@@ -1686,8 +1706,8 @@ func fetchLatestReleaseInfo() (githubLatestRelease, error) {
 
 func selectDesktopUpdateAsset(release githubLatestRelease) (githubReleaseAsset, error) {
 	preferredNames := []string{
-		"Exposely-amd64-installer.exe",
 		"Exposely.exe",
+		"Exposely-amd64-installer.exe",
 	}
 
 	for _, preferred := range preferredNames {
@@ -1916,6 +1936,55 @@ func loadDotEnv(path string) error {
 	}
 
 	return nil
+}
+
+func launchWindowsReplace(parentPID int, targetPath, downloadedPath string) error {
+	targetDir := filepath.Dir(targetPath)
+	script := buildWindowsReplaceScript(parentPID, targetPath, downloadedPath)
+	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", script)
+	cmd.Dir = targetDir
+	cmd.SysProcAttr = windowsHiddenProcessAttrs()
+	return cmd.Start()
+}
+
+func buildWindowsReplaceScript(parentPID int, targetPath, downloadedPath string) string {
+	escapedTarget := strconv.Quote(targetPath)
+	escapedDownloaded := strconv.Quote(downloadedPath)
+
+	return fmt.Sprintf(`$ErrorActionPreference = 'SilentlyContinue'
+$parentPID = %d
+$target = %s
+$downloaded = %s
+for ($i = 0; $i -lt 120; $i++) {
+  $parent = Get-Process -Id $parentPID -ErrorAction SilentlyContinue
+  if ($null -ne $parent) {
+    Start-Sleep -Milliseconds 500
+    continue
+  }
+
+  try {
+    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+    Move-Item -LiteralPath $downloaded -Destination $target -Force
+    if ((Test-Path -LiteralPath $target) -and -not (Test-Path -LiteralPath $downloaded)) {
+      Start-Process -FilePath $target
+      exit 0
+    }
+  } catch {
+  }
+
+  Start-Sleep -Milliseconds 500
+}
+exit 1`, parentPID, escapedTarget, escapedDownloaded)
+}
+
+func windowsHiddenProcessAttrs() *syscall.SysProcAttr {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000,
+	}
 }
 
 func nowStamp() string {
