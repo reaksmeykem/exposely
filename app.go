@@ -504,7 +504,7 @@ func normalizeServiceURL(raw string) (string, bool, error) {
 }
 
 func checkLocalHTTPService(serviceURL string) error {
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 800 * time.Millisecond}
 	resp, err := client.Get(serviceURL)
 	if err != nil {
 		return err

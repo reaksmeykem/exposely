@@ -46,6 +46,8 @@ type Manager struct {
 	usageStop   chan struct{}
 }
 
+const quickTunnelStartupTimeout = 45 * time.Second
+
 func NewManager(configPath string, logSink func(models.LogEntry), statusSink func(models.TunnelStatus)) *Manager {
 	return &Manager{
 		configPath: configPath,
@@ -283,6 +285,8 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 		"USERPROFILE="+tempHome,
 		"HOMEDRIVE="+filepath.VolumeName(tempHome),
 		"HOMEPATH="+strings.TrimPrefix(tempHome, filepath.VolumeName(tempHome)),
+		"NO_AUTOUPDATE=true",
+		"TUNNEL_TRANSPORT_PROTOCOL=http2",
 	)
 
 	stdout, err := cmd.StdoutPipe()
@@ -318,12 +322,20 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 	m.emitStatusLocked()
 	m.mu.Unlock()
 
-	go m.StreamPipe("cloudflared", stdout)
-	go m.StreamPipe("cloudflared", stderr)
+	readyCh := make(chan string, 1)
+	go m.StreamPipe("cloudflared", stdout, readyCh)
+	go m.StreamPipe("cloudflared", stderr, readyCh)
 	go m.waitForProcess("quick", cmd)
 	m.startUsagePoller()
 	m.pushLog("cloudflared", "info", "Started quick tunnel")
-	return nil
+
+	select {
+	case <-readyCh:
+		return nil
+	case <-time.After(quickTunnelStartupTimeout):
+		_ = m.StopTunnel()
+		return fmt.Errorf("timed out waiting for public URL after %s", quickTunnelStartupTimeout)
+	}
 }
 
 func quickTunnelArgs(serviceURL, hostHeader string) []string {
@@ -336,10 +348,10 @@ func quickTunnelArgs(serviceURL, hostHeader string) []string {
 
 	if strings.HasPrefix(serviceURL, "http://127.0.0.1") || strings.HasPrefix(serviceURL, "http://localhost") {
 		// Keep loopback-origin arguments minimal and compatible with current cloudflared versions.
-		return append(args, "--proxy-connect-timeout", "10s")
+		return append(args, "--proxy-connect-timeout", "2s", "--edge-ip-version", "4")
 	}
 
-	return args
+	return append(args, "--edge-ip-version", "4")
 }
 
 func (m *Manager) StopTunnel() error {
@@ -389,7 +401,7 @@ func (m *Manager) StopTunnel() error {
 	return nil
 }
 
-func (m *Manager) StreamPipe(source string, pipe io.ReadCloser) {
+func (m *Manager) StreamPipe(source string, pipe io.ReadCloser, readyCh ...chan<- string) {
 	scanner := bufio.NewScanner(pipe)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -412,6 +424,12 @@ func (m *Manager) StreamPipe(source string, pipe io.ReadCloser) {
 			m.status.QuickURL = matches
 			m.emitStatusLocked()
 			m.mu.Unlock()
+			for _, ch := range readyCh {
+				select {
+				case ch <- matches:
+				default:
+				}
+			}
 		}
 	}
 }

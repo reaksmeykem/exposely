@@ -18,7 +18,8 @@ func TestQuickTunnelArgsForLoopbackHTMLOrigin(t *testing.T) {
 	assertArgsEqual(t, args, []string{
 		"tunnel",
 		"--url", "http://127.0.0.1:9090",
-		"--proxy-connect-timeout", "10s",
+		"--proxy-connect-timeout", "2s",
+		"--edge-ip-version", "4",
 	})
 }
 
