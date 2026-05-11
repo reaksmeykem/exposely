@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - "v*"
   release:
     types:
       - published
@@ -16,7 +19,7 @@ permissions:
 
 env:
   NODE_VERSION: "20"
-  RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+  RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'push' && github.ref_name || inputs.tag }}
 
 jobs:
   windows-assets:
@@ -87,6 +90,17 @@ jobs:
             if (-not (Test-Path -LiteralPath $asset)) {
               throw "Missing release asset: $asset"
             }
+          }
+
+      - name: Create or update GitHub release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          if (gh release view $env:RELEASE_TAG 2>$null) {
+            gh release edit $env:RELEASE_TAG --latest
+          } else {
+            gh release create $env:RELEASE_TAG --title "Exposely $env:RELEASE_TAG" --notes "Exposely $env:RELEASE_TAG" --latest
           }
 
       - name: Upload release assets
