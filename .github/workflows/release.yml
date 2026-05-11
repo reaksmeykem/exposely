@@ -19,16 +19,36 @@ permissions:
 
 env:
   NODE_VERSION: "20"
-  RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'push' && github.ref_name || inputs.tag }}
 
 jobs:
   windows-assets:
     runs-on: windows-latest
     steps:
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
+          PUSH_REF_NAME: ${{ github.ref_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          $tag = switch ($env:EVENT_NAME) {
+            "release" { $env:RELEASE_EVENT_TAG; break }
+            "push" { $env:PUSH_REF_NAME; break }
+            default { $env:DISPATCH_TAG; break }
+          }
+
+          if (-not $tag) {
+            throw "Could not resolve release tag for event '$env:EVENT_NAME'."
+          }
+
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Checkout release ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ steps.release.outputs.tag }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -95,6 +115,7 @@ jobs:
       - name: Create or update GitHub release
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         shell: pwsh
         run: |
           if (gh release view $env:RELEASE_TAG 2>$null) {
@@ -106,6 +127,7 @@ jobs:
       - name: Upload release assets
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         shell: pwsh
         run: |
           gh release upload $env:RELEASE_TAG `
