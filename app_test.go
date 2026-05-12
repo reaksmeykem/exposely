@@ -158,7 +158,7 @@ func TestNormalizeShareModePreservesStableAndRandom(t *testing.T) {
 	}
 }
 
-func TestSelectDesktopUpdateAssetPrefersPortableExe(t *testing.T) {
+func TestSelectDesktopUpdateAssetPrefersInstaller(t *testing.T) {
 	release := githubLatestRelease{
 		Assets: []githubReleaseAsset{
 			{Name: "Exposely.exe", BrowserDownloadURL: "https://example.com/portable.exe"},
@@ -170,12 +170,12 @@ func TestSelectDesktopUpdateAssetPrefersPortableExe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if asset.Name != "Exposely.exe" {
-		t.Fatalf("expected portable exe asset to be preferred, got %q", asset.Name)
+	if asset.Name != "Exposely-amd64-installer.exe" {
+		t.Fatalf("expected installer asset to be preferred, got %q", asset.Name)
 	}
 }
 
-func TestSelectDesktopUpdateAssetFallsBackToPortableExe(t *testing.T) {
+func TestSelectDesktopUpdateAssetFallsBackToPortableExeWhenInstallerMissing(t *testing.T) {
 	release := githubLatestRelease{
 		Assets: []githubReleaseAsset{
 			{Name: "exposely-cli.exe", BrowserDownloadURL: "https://example.com/cli.exe"},

@@ -1706,8 +1706,8 @@ func fetchLatestReleaseInfo() (githubLatestRelease, error) {
 
 func selectDesktopUpdateAsset(release githubLatestRelease) (githubReleaseAsset, error) {
 	preferredNames := []string{
-		"Exposely.exe",
 		"Exposely-amd64-installer.exe",
+		"Exposely.exe",
 	}
 
 	for _, preferred := range preferredNames {
