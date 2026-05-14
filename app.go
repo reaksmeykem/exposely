@@ -1390,6 +1390,9 @@ func (a *App) normalizeSettings(input models.AppSettings) models.AppSettings {
 	if strings.TrimSpace(output.DefaultServiceURL) == "" {
 		output.DefaultServiceURL = "http://127.0.0.1:80"
 	}
+	if strings.TrimSpace(output.Language) == "" {
+		output.Language = "en"
+	}
 	for i := range output.Projects {
 		output.Projects[i].ID = ensureID(output.Projects[i].ID)
 		output.Projects[i].DisplayName = strings.TrimSpace(output.Projects[i].DisplayName)

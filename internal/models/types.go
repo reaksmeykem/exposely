@@ -29,6 +29,8 @@ type AppSettings struct {
 	CloudflaredPath   string          `json:"cloudflaredPath"`
 	DefaultServiceURL string          `json:"defaultServiceURL"`
 	LicenseToken      string          `json:"licenseToken,omitempty"`
+	Language          string          `json:"language"`
+	Theme             string          `json:"theme"`
 	Projects          []ProjectPreset `json:"projects"`
 }
 
@@ -38,6 +40,8 @@ func DefaultSettings() AppSettings {
 		TunnelName:        "exposely",
 		CloudflaredPath:   "",
 		DefaultServiceURL: "http://127.0.0.1:80",
+		Language:          "en",
+		Theme:             "dark",
 		Projects:          []ProjectPreset{},
 	}
 }

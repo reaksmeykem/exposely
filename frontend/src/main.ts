@@ -1,5 +1,6 @@
 import './style.css';
 import { api } from './api';
+import { t, setLang, getLang } from './i18n';
 import { WindowCenter, WindowIsMaximised, WindowSetMinSize, WindowSetSize, WindowUnmaximise } from '../wailsjs/runtime/runtime';
 import type { AppState, LogEntry, ProjectPreset, ShareMode, TunnelStatus } from './types';
 
@@ -25,6 +26,7 @@ interface UIState {
   notice: Notice | null;
   busy: string | null;
   licenseDraft: string;
+  projectSearch: string;
 }
 
 const blankProject = (): ProjectPreset => ({
@@ -55,6 +57,7 @@ const state: UIState = {
   notice: null,
   busy: null,
   licenseDraft: '',
+  projectSearch: '',
 };
 
 const rootElement = document.querySelector<HTMLDivElement>('#app');
@@ -68,6 +71,7 @@ const COMPACT_WINDOW_MIN_WIDTH = 900;
 const COMPACT_WINDOW_MIN_HEIGHT = 620;
 let noticeTimer: number | null = null;
 let copyLabelTimer: number | null = null;
+let currentTheme: 'dark' | 'light' = 'dark';
 
 function escapeHtml(value: string): string {
   return value
@@ -76,6 +80,58 @@ function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function languageFlagIcon(lang: string): string {
+  if (lang === 'km') {
+    return `
+      <svg class="flag-icon" viewBox="0 0 36 24" role="img" aria-label="Khmer flag" xmlns="http://www.w3.org/2000/svg">
+        <rect width="36" height="24" rx="3" fill="#032ea1"/>
+        <rect y="6" width="36" height="12" fill="#e00025"/>
+        <path d="M12 16.4h12v1.3H12v-1.3Zm1-1.5h10v1.1H13v-1.1Zm1.2-2.6h7.6v2.2h-7.6v-2.2Zm1.1-2h1.3v1.7h-1.3v-1.7Zm2.1-.9h1.2V12h-1.2V9.4Zm2 .9h1.3V12h-1.3v-1.7Zm-4.8 1.2h6.8l-3.4-2.7-3.4 2.7Z" fill="#fff"/>
+      </svg>
+    `;
+  }
+
+  return `
+    <svg class="flag-icon" viewBox="0 0 36 24" role="img" aria-label="English flag" xmlns="http://www.w3.org/2000/svg">
+      <rect width="36" height="24" rx="3" fill="#012169"/>
+      <path d="M0 0h4.1L36 20.2V24h-4.1L0 3.8V0Zm36 0v3.8L4.1 24H0v-3.8L31.9 0H36Z" fill="#fff"/>
+      <path d="M36 0 0 24h2.8L36 1.8V0ZM0 0l36 24h-2.8L0 1.8V0Z" fill="#c8102e"/>
+      <path d="M15 0h6v24h-6V0ZM0 9h36v6H0V9Z" fill="#fff"/>
+      <path d="M16.2 0h3.6v24h-3.6V0ZM0 10.2h36v3.6H0v-3.6Z" fill="#c8102e"/>
+    </svg>
+  `;
+}
+
+function nextLanguage(): 'en' | 'km' {
+  return getLang() === 'en' ? 'km' : 'en';
+}
+
+function setTheme(theme: string) {
+  currentTheme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = currentTheme;
+}
+
+function nextTheme(): 'dark' | 'light' {
+  return currentTheme === 'dark' ? 'light' : 'dark';
+}
+
+function themeIcon(theme: 'dark' | 'light'): string {
+  if (theme === 'dark') {
+    return `
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <path d="M21 14.6A7.5 7.5 0 0 1 9.4 3 9 9 0 1 0 21 14.6Z" fill="currentColor"/>
+      </svg>
+    `;
+  }
+
+  return `
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="12" cy="12" r="4" fill="currentColor"/>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+  `;
 }
 
 function formatProjectURL(project: ProjectPreset, domain: string): string {
@@ -113,13 +169,13 @@ function resolvedProjectURL(project: ProjectPreset, appState: AppState): string 
 function shareActionForProject(project: ProjectPreset): { action: string; label: string } {
   switch (project.shareMode) {
     case 'auto':
-      return { action: 'share-quick', label: 'Start Auto Share' };
+      return { action: 'share-quick', label: t('startAutoShare') };
     case 'quick':
-      return { action: 'share-quick', label: 'Create Public URL' };
+      return { action: 'share-quick', label: t('createPublicUrl') };
     case 'host-html':
-      return { action: 'share-quick', label: 'Create HTML Site URL' };
+      return { action: 'share-quick', label: t('createHtmlUrl') };
     default:
-      return { action: 'share-quick', label: 'Create Public URL' };
+      return { action: 'share-quick', label: t('createPublicUrl') };
   }
 }
 
@@ -147,21 +203,21 @@ function inferLocalHostFromPath(projectPath: string): string {
 function projectTypeLabel(project: ProjectPreset): string {
   switch (project.shareMode) {
     case 'auto':
-      return 'Auto Project';
+      return t('autoProject');
     case 'host-html':
-      return 'HTML Project';
+      return t('htmlProject');
     default:
-      return 'Local Host Project';
+      return t('localHostProject');
   }
 }
 
 function projectPrimaryTarget(project: ProjectPreset): string {
   if (project.localURL.trim()) return project.localURL.trim();
   if (looksLikeURL(project.projectPath)) return project.projectPath.trim();
-  if (project.shareMode === 'host-html') return 'HTML Site (Folder)';
+  if (project.shareMode === 'host-html') return t('htmlSiteFolder');
   if (project.localHost.trim()) return project.localHost.trim();
-  if (project.startCommand.trim()) return `Auto via ${project.startCommand.trim()}`;
-  return project.projectPath.trim() || 'Project source';
+  if (project.startCommand.trim()) return `${t('autoVia')} ${project.startCommand.trim()}`;
+  return project.projectPath.trim() || t('projectSource');
 }
 
 function randomSubdomainValue(): string {
@@ -225,9 +281,9 @@ function shareModeLabel(mode: ShareMode): string {
     case 'auto':
       return 'Auto';
     case 'host-html':
-      return 'HTML Site';
+      return t('htmlSite');
     default:
-      return 'Public URL';
+      return t('publicUrl');
   }
 }
 
@@ -263,10 +319,10 @@ function renderUsagePanel(status: TunnelStatus): string {
     return `
       <div class="usage-panel usage-panel-pending">
         <div class="usage-panel-header">
-          <span class="eyebrow">Live tunnel usage</span>
-          <span class="usage-badge">warming up</span>
+          <span class="eyebrow">${t('liveTunnelUsage')}</span>
+          <span class="usage-badge">${t('warmingUp')}</span>
         </div>
-        <p class="usage-hint">Collecting live metrics from cloudflared... This takes a few seconds after the tunnel starts.</p>
+        <p class="usage-hint">${t('warmingUpHint')}</p>
       </div>
     `;
   }
@@ -291,7 +347,7 @@ function renderUsagePanel(status: TunnelStatus): string {
           return `<span class="usage-code usage-code-${tone}" title="HTTP ${escapeHtml(code)}">${escapeHtml(code)} · ${formatNumber(count)}</span>`;
         })
         .join('')
-    : '<span class="usage-code usage-code-muted">No responses yet</span>';
+    : `<span class="usage-code usage-code-muted">${t('noResponsesYet')}</span>`;
 
   const edge = (usage.edgeLocations || []).filter(Boolean);
   const edgeLabel = edge.length ? edge.join(', ') : '—';
@@ -299,33 +355,33 @@ function renderUsagePanel(status: TunnelStatus): string {
   return `
     <div class="usage-panel">
       <div class="usage-panel-header">
-        <span class="eyebrow">Live tunnel usage</span>
-        <span class="usage-badge usage-badge-live">live</span>
+        <span class="eyebrow">${t('liveTunnelUsage')}</span>
+        <span class="usage-badge usage-badge-live">${t('live')}</span>
       </div>
       <div class="usage-grid">
         <div class="usage-cell">
-          <span class="usage-label">Requests</span>
+          <span class="usage-label">${t('requests')}</span>
           <strong>${formatNumber(usage.totalRequests)}</strong>
-          <span class="usage-sub">${formatNumber(usage.requestsPerMin)}/min</span>
+          <span class="usage-sub">${formatNumber(usage.requestsPerMin)}${t('perMin')}</span>
         </div>
         <div class="usage-cell">
-          <span class="usage-label">Edge connections</span>
+          <span class="usage-label">${t('edgeConnections')}</span>
           <strong>${formatNumber(usage.haConnections)}</strong>
-          <span class="usage-sub">active to Cloudflare</span>
+          <span class="usage-sub">${t('activeToCloudflare')}</span>
         </div>
         <div class="usage-cell">
-          <span class="usage-label">In-flight</span>
+          <span class="usage-label">${t('inFlight')}</span>
           <strong>${formatNumber(usage.activeConns)}</strong>
-          <span class="usage-sub">concurrent requests</span>
+          <span class="usage-sub">${t('concurrentRequests')}</span>
         </div>
         <div class="usage-cell">
-          <span class="usage-label">Uptime</span>
+          <span class="usage-label">${t('uptime')}</span>
           <strong>${escapeHtml(formatUptime(usage.uptimeSeconds))}</strong>
           <span class="usage-sub">${escapeHtml(edgeLabel)}</span>
         </div>
       </div>
       <div class="usage-codes">${codesHtml}</div>
-      <p class="usage-hint">Live from local cloudflared. No Cloudflare login required. Counters reset when the tunnel restarts.</p>
+      <p class="usage-hint">${t('usageHint')}</p>
     </div>
   `;
 }
@@ -342,13 +398,13 @@ function updateBanner(appState: AppState): string {
   return `
     <section class="install-banner" data-action="tab-about">
       <div class="install-banner-copy">
-        <span class="install-banner-label">Update available</span>
-        <strong>Exposely ${escapeHtml(displayVersionLabel(update.latestVersion))} is ready</strong>
-        <p>${escapeHtml(update.message || `You are using v${update.currentVersion}.`)}</p>
+        <span class="install-banner-label">${t('updateAvailable')}</span>
+        <strong>Exposely ${escapeHtml(displayVersionLabel(update.latestVersion))} ${t('isReady')}</strong>
+        <p>${escapeHtml(update.message || `${t('updateCurrentVersion')} v${update.currentVersion}.`)}</p>
       </div>
       <div class="install-banner-action">
-        <button type="button" data-action="install-latest-update">Update Now</button>
-        <button type="button" data-action="open-latest-release">Open Release</button>
+        <button type="button" data-action="install-latest-update">${t('updateNow')}</button>
+        <button type="button" data-action="open-latest-release">${t('openRelease')}</button>
       </div>
     </section>
   `;
@@ -371,7 +427,18 @@ function logRows(logs: LogEntry[]): string {
 }
 
 function projectRows(appState: AppState): string {
-  return appState.settings.projects
+  const query = state.projectSearch.trim().toLowerCase();
+  const projects = appState.settings.projects.filter((project) => {
+    if (!query) return true;
+    return [project.displayName, projectTypeLabel(project), project.localHost, project.localURL, project.projectPath, project.publicURL, project.subdomain]
+      .some((value) => value.toLowerCase().includes(query));
+  });
+
+  if (projects.length === 0) {
+    return `<div class="empty-list">${escapeHtml(query ? t('noMatchingProjects') : t('noProject'))}</div>`;
+  }
+
+  return projects
     .map((project) => {
       const isSelected = selectedProject()?.id === project.id;
       const showRunning = state.activeProjectId === project.id && appState.status.running;
@@ -381,7 +448,7 @@ function projectRows(appState: AppState): string {
             <strong>${escapeHtml(project.displayName)}</strong>
             <span class="project-type-tag">${escapeHtml(projectTypeLabel(project))}</span>
           </div>
-          ${showRunning ? '<span class="project-running-badge">Running</span>' : ''}
+          ${showRunning ? `<span class="project-running-badge">${t('running')}</span>` : ''}
         </button>
       `;
     })
@@ -393,9 +460,9 @@ function render() {
     root.innerHTML = `
       <main class="shell loading-state">
         <section class="hero-card" style="border-color: var(--danger);">
-          <h1 style="color: var(--danger);">Initialization Error</h1>
+          <h1 style="color: var(--danger);">${t('initError')}</h1>
           <p>${escapeHtml(state.fatalError)}</p>
-          <button type="button" onclick="window.location.reload()" style="margin-top: 20px;">Reload Application</button>
+          <button type="button" onclick="window.location.reload()" style="margin-top: 20px;">${t('reloadApp')}</button>
         </section>
       </main>
     `;
@@ -407,7 +474,7 @@ function render() {
       <main class="shell loading-state">
         <section class="hero-card">
           <h1>Exposely</h1>
-          <p>Loading backend state...</p>
+          <p>${t('loadingBackend')}</p>
         </section>
       </main>
     `;
@@ -433,21 +500,21 @@ function render() {
   const canStartTunnel = project ? canShareSelectedProject : shareToolReady && hasProjects;
   const canRunProjectBuild = Boolean(project?.projectPath.trim()) && !looksLikeURL(project?.projectPath ?? '') && appState.buildCommandDetected && !appState.buildRunning;
   const canTestProject = Boolean(project?.localHost.trim()) && project?.shareMode !== 'host-html' && project?.shareMode !== 'auto';
-  const shareToolStatusLabel = shareToolReady ? 'Installed' : 'Not installed';
+  const shareToolStatusLabel = shareToolReady ? t('installed') : t('notInstalled');
   const shareToolStatusBadgeClass = shareToolReady ? 'pill-success' : 'pill-outline';
   const shareToolStatusMessage = shareToolReady
-    ? 'cloudflared was detected and is ready to create a tunnel URL.'
-    : 'Install cloudflared first before sharing projects.';
-  const setupTunnelStatusLabel = canSetupTunnel ? 'Available' : 'Install required';
+    ? t('cloudflaredReady')
+    : t('cloudflaredNotReady');
+  const setupTunnelStatusLabel = canSetupTunnel ? t('available') : t('installRequired');
   const setupTunnelStatusBadgeClass = canSetupTunnel ? 'pill-success' : 'pill-outline';
   const setupTunnelStatusMessage = canSetupTunnel
-    ? 'cloudflared is available for tunnel sharing.'
-    : 'Install cloudflared first before using tunnel sharing.';
+    ? t('tunnelAvailable')
+    : t('tunnelNotAvailable');
   const installBannerPath = appState.cloudflaredPath || 'cloudflared.exe (PATH)';
   const headerHint = !shareToolReady
     ? ''
     : !hasProjects
-      ? 'Create a project first'
+      ? t('createProjectFirst')
       : '';
 
   root.innerHTML = `
@@ -455,78 +522,95 @@ function render() {
       <aside class="sidebar">
         <div class="sidebar-header">
           <div class="logo">
-            <img src="./logo.png?v=3" alt="App logo" />
-            <div class="logo-text">
-              <h1>Exposely</h1>
-              <div class="status-indicator tone-${statusTone(tunnelStatus)}">
-                <span class="status-dot"></span>
-                <span>${escapeHtml(tunnelStatus.running ? 'Running' : 'Stopped')}</span>
+            <div class="logo-main">
+              <img src="./logo.png?v=3" alt="App logo" />
+              <div class="logo-text">
+                <h1>Exposely</h1>
+                <div class="status-indicator tone-${statusTone(tunnelStatus)}">
+                  <span class="status-dot"></span>
+                  <span>${escapeHtml(tunnelStatus.running ? t('running') : t('stopped'))}</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <nav class="sidebar-nav">
-          <button type="button" class="nav-item ${state.activeTab === 'overview' ? 'active' : ''}" data-action="tab-overview">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M10 2L2 7L10 12L18 7L10 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M2 13L10 18L18 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span>Overview</span>
-          </button>
-          <button type="button" class="nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="tab-settings">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="2"/>
-              <path d="M10 2V4M10 16V18M18 10H16M4 10H2M15.66 4.34L14.24 5.76M5.76 14.24L4.34 15.66M15.66 15.66L14.24 14.24M5.76 5.76L4.34 4.34" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            </svg>
-            <span>Settings</span>
-          </button>
-          <button type="button" class="nav-item ${state.activeTab === 'about' ? 'active' : ''}" data-action="tab-about">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="16" x2="12" y2="12"></line>
-              <line x1="12" y1="8" x2="12.01" y2="8"></line>
-            </svg>
-            <span>About</span>
-          </button>
-        </nav>
-
-        ${state.activeTab === 'overview' ? `
-          <div class="sidebar-section sidebar-create-section">
-            <div class="section-header">
-              <h3>Projects</h3>
-              <button type="button" class="add-button" data-action="new-project" title="New Project">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19"></line>
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          <div class="sidebar-section sidebar-projects-section">
-            <div class="project-list">${projectRows(appState)}</div>
-          </div>
-        ` : '<div class="sidebar-section sidebar-projects-empty"></div>'}
-
-        <div class="sidebar-footer">
-          <div class="nav-item ${state.activeTab === 'logs' ? 'active' : ''} logs-nav-item" data-action="tab-logs">
-            <span>Logs</span>
+        <div class="sidebar-section sidebar-create-section">
+          <div class="section-header">
+            <h3>${t('projects')}</h3>
+            <button type="button" class="add-button" data-action="new-project" title="${t('newProject')}">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
           </div>
         </div>
+
+        <div class="sidebar-section sidebar-projects-section">
+          <div class="project-search">
+            <input id="project-search" type="search" value="${escapeHtml(state.projectSearch)}" placeholder="${t('searchProjects')}" aria-label="${t('searchProjects')}" autocomplete="off" />
+          </div>
+          <div class="project-list">${projectRows(appState)}</div>
+        </div>
+
       </aside>
 
       <section class="main-content">
+        <div class="app-navbar">
+          <nav class="top-nav" aria-label="Primary">
+            <button type="button" class="top-nav-item ${state.activeTab === 'overview' ? 'active' : ''}" data-action="tab-overview">
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M10 2L2 7L10 12L18 7L10 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M2 13L10 18L18 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>${t('overview')}</span>
+            </button>
+            <button type="button" class="top-nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="tab-settings">
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="2"/>
+                <path d="M10 2V4M10 16V18M18 10H16M4 10H2M15.66 4.34L14.24 5.76M5.76 14.24L4.34 15.66M15.66 15.66L14.24 14.24M5.76 5.76L4.34 4.34" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <span>${t('settings')}</span>
+            </button>
+            <button type="button" class="top-nav-item ${state.activeTab === 'about' ? 'active' : ''}" data-action="tab-about">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+              </svg>
+              <span>${t('about')}</span>
+            </button>
+            <button type="button" class="top-nav-item ${state.activeTab === 'logs' ? 'active' : ''}" data-action="tab-logs">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="8" y1="13" x2="16" y2="13"></line>
+                <line x1="8" y1="17" x2="16" y2="17"></line>
+              </svg>
+              <span>${t('logs')}</span>
+            </button>
+          </nav>
+          <div class="navbar-actions">
+            <button type="button" class="icon-switch" data-action="toggle-theme" aria-label="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}" title="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}">
+              ${themeIcon(nextTheme())}
+            </button>
+            <button type="button" class="icon-switch lang-switch" data-action="toggle-lang" aria-label="${nextLanguage() === 'km' ? t('switchToKhmer') : t('switchToEnglish')}" title="${nextLanguage() === 'km' ? t('switchToKhmer') : t('switchToEnglish')}">
+              <span aria-hidden="true">${languageFlagIcon(nextLanguage())}</span>
+            </button>
+          </div>
+        </div>
+
         ${!shareToolReady ? `
           <section class="install-banner" data-action="tab-settings">
             <div class="install-banner-copy">
-              <span class="install-banner-label">Required setup</span>
-              <strong>Install cloudflared first</strong>
-              <p>This app will create a Cloudflare Tunnel URL for the selected local project.</p>
-              <span class="install-banner-path">Expected path: ${escapeHtml(installBannerPath)}</span>
+              <span class="install-banner-label">${t('requiredSetup')}</span>
+              <strong>${t('installCloudflaredFirst')}</strong>
+              <p>${t('tunnelBannerDesc')}</p>
+              <span class="install-banner-path">${t('expectedPath')}: ${escapeHtml(installBannerPath)}</span>
             </div>
             <div class="install-banner-action">
-              <button type="button" class="danger-button" data-action="tab-settings">Open Settings</button>
+              <button type="button" class="danger-button" data-action="tab-settings">${t('openSettings')}</button>
             </div>
           </section>
         ` : ''}
@@ -534,19 +618,19 @@ function render() {
 
         <header class="content-header">
           <div class="header-info">
-            <h2>${state.activeTab === 'overview' ? 'Projects' : state.activeTab === 'settings' ? 'Settings' : state.activeTab === 'logs' ? 'Logs' : 'About'}</h2>
+            <h2>${state.activeTab === 'overview' ? t('projects') : state.activeTab === 'settings' ? t('settings') : state.activeTab === 'logs' ? t('logs') : t('about')}</h2>
             ${state.busy ? `<p class="busy-indicator">${escapeHtml(state.busy)}</p>` : ''}
           </div>
           <div class="header-actions">
             <button type="button" data-action="start-tunnel" ${state.appState?.status.running || !canStartTunnel ? 'disabled' : ''}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-              ${escapeHtml(shareAction?.label || 'Start Tunnel')}
+              ${escapeHtml(shareAction?.label || t('startTunnel'))}
             </button>
             <button type="button" class="secondary" data-action="stop-tunnel">
                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12"></rect></svg>
-               Stop
+               ${t('stop')}
             </button>
-            <button type="button" class="secondary" data-action="refresh" title="Refresh state">
+            <button type="button" class="secondary" data-action="refresh" title="${t('refreshState')}">
                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
             </button>
           </div>
@@ -562,51 +646,51 @@ function render() {
               <section class="panel editor-panel">
                 <div class="panel-header">
                   <div>
-                    <p class="eyebrow">${state.editorMode === 'create' ? 'New project' : 'Edit project'}</p>
-                    <h2>${escapeHtml(state.editorProject.displayName || 'Project preset')}</h2>
+                    <p class="eyebrow">${state.editorMode === 'create' ? t('newProject') : t('editProject')}</p>
+                    <h2>${escapeHtml(state.editorProject.displayName || t('projectPreset'))}</h2>
                   </div>
-                  <button type="button" class="secondary" data-action="close-editor">Close</button>
+                  <button type="button" class="secondary" data-action="close-editor">${t('closeEditor')}</button>
                 </div>
                 <form id="project-form" class="form-grid editor-grid">
                   <input type="hidden" name="id" value="${escapeHtml(state.editorProject.id)}" />
-                  <label class="wide">Display name<input name="displayName" value="${escapeHtml(state.editorProject.displayName)}" /></label>
+                  <label class="wide">${t('displayName')}<input name="displayName" value="${escapeHtml(state.editorProject.displayName)}" /></label>
                   <label class="wide">
-                    ${state.editorProject.shareMode === 'quick' ? 'Project folder' : 'Project folder (optional when Local URL is set)'}
+                    ${state.editorProject.shareMode === 'quick' ? t('projectFolder') : t('projectFolderOptional')}
                     <div class="folder-picker">
                       <input
                         name="projectPath"
                         value="${escapeHtml(state.editorProject.projectPath)}"
                         placeholder="${state.editorProject.shareMode === 'quick' ? 'D:\\code\\hr-system' : 'D:\\code\\site'}"
                       />
-                      <button type="button" class="secondary browse-button" data-action="browse-project-folder">Browse</button>
+                      <button type="button" class="secondary browse-button" data-action="browse-project-folder">${t('browse')}</button>
                     </div>
                   </label>
                   <label>
-                    Project Type
+                    ${t('projectType')}
                     <select name="shareMode">
-                      <option value="auto" ${state.editorProject.shareMode === 'auto' ? 'selected' : ''}>Auto Detect Project</option>
-                      <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>Local Host Project</option>
-                      <option value="host-html" ${state.editorProject.shareMode === 'host-html' ? 'selected' : ''}>HTML Project (Folder or Local URL)</option>
+                      <option value="auto" ${state.editorProject.shareMode === 'auto' ? 'selected' : ''}>${t('autoDetectProject')}</option>
+                      <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>${t('localHostProjectOption')}</option>
+                      <option value="host-html" ${state.editorProject.shareMode === 'host-html' ? 'selected' : ''}>${t('htmlProjectOption')}</option>
                     </select>
                   </label>
                   ${
                     state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto'
-                      ? `<label>${state.editorProject.shareMode === 'auto' ? 'Local host (optional)' : 'Local host'}<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="app.test" /></label>`
+                      ? `<label>${state.editorProject.shareMode === 'auto' ? t('localHostOptional') : t('localHostRequired')}<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="app.test" /></label>`
                       : ''
                   }
                   ${
                     state.editorProject.shareMode === 'auto' || state.editorProject.shareMode === 'host-html'
-                      ? `<label>Local URL (optional)<input name="localURL" value="${escapeHtml(state.editorProject.localURL)}" placeholder="http://127.0.0.1:5500" /></label>`
+                      ? `<label>${t('localUrl')}<input name="localURL" value="${escapeHtml(state.editorProject.localURL)}" placeholder="http://127.0.0.1:5500" /></label>`
                       : ''
                   }
                   ${
                     state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto'
-                      ? `<label>Origin URL (optional)<input name="originURL" value="${escapeHtml(state.editorProject.originURL)}" placeholder="http://127.0.0.1:80" /></label>`
+                      ? `<label>${t('originUrl')}<input name="originURL" value="${escapeHtml(state.editorProject.originURL)}" placeholder="http://127.0.0.1:80" /></label>`
                       : ''
                   }
                   ${
                     state.editorProject.shareMode === 'auto'
-                      ? `<label class="wide">Start command (optional)<input name="startCommand" value="${escapeHtml(state.editorProject.startCommand)}" placeholder="npm run dev -- --port 4173" /></label>`
+                      ? `<label class="wide">${t('startCommand')}<input name="startCommand" value="${escapeHtml(state.editorProject.startCommand)}" placeholder="npm run dev -- --port 4173" /></label>`
                       : ''
                   }
                    ${
@@ -617,7 +701,7 @@ function render() {
                            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
                            <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                          </svg>
-                         <span>Share either a local HTML folder or an already running local URL like http://127.0.0.1:5500 via Cloudflare Tunnel.</span>
+                         <span>${t('hintHtml')}</span>
                         </div>
                         `
                       : state.editorProject.shareMode === 'auto'
@@ -627,7 +711,7 @@ function render() {
                            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
                            <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                          </svg>
-                         <span>Auto mode can use a local URL, run a start command and detect the dev server, use a local host, auto-detect Laravel folders, or serve a static folder/build output.</span>
+                         <span>${t('hintAuto')}</span>
                         </div>
                         `
                        : `
@@ -636,11 +720,11 @@ function render() {
                            <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
                            <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                          </svg>
-                         <span>Expose a local host such as app.test through a public URL.</span>
+                          <span>${t('hintLocalHost')}</span>
                        </div>
                      `
                    }
-                  <div class="action-row wide"><button type="submit">${state.editorMode === 'create' ? 'Save Project' : 'Update Project'}</button></div>
+                  <div class="action-row wide"><button type="submit">${state.editorMode === 'create' ? t('saveProject') : t('updateProject')}</button></div>
                 </form>
               </section>
             `
@@ -653,14 +737,14 @@ function render() {
                 <article class="panel selected-panel">
                   <div class="panel-header">
                     <div>
-                      <h2>${escapeHtml(project?.displayName || 'No project selected')}</h2>
+                      <h2>${escapeHtml(project?.displayName || t('noProject'))}</h2>
                     </div>
                     <div class="selected-header-actions">
                       ${
                         project
                           ? `
                             <div class="dropdown">
-                              <button type="button" class="secondary menu-button" data-action="toggle-project-menu">Manage</button>
+                              <button type="button" class="secondary menu-button" data-action="toggle-project-menu">${t('manage')}</button>
                               ${
                                 state.projectMenuOpen
                                   ? `
@@ -669,13 +753,13 @@ function render() {
                                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                                           <path d="M11.333 2.667a.943.943 0 0 1 1.333 1.333l-6.4 6.4L3.333 11.333l.933-2.933 6.4-5.733Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
-                                        <span>Edit project</span>
+                                        <span>${t('editProject')}</span>
                                       </button>
                                       <button type="button" class="dropdown-item danger-item" data-action="delete-project">
                                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                                           <path d="M2.667 4h10.666M6 2.667h4M5.333 6v5.333M8 6v5.333M10.667 6v5.333M4.667 4l.4 8A1.333 1.333 0 0 0 6.4 13.333h3.2A1.333 1.333 0 0 0 10.933 12l.4-8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
-                                        <span>Delete project</span>
+                                        <span>${t('deleteProject')}</span>
                                       </button>
                                     </div>
                                   `
@@ -695,14 +779,14 @@ function render() {
                           <div class="hero-project-main">
                             <strong>${escapeHtml(projectPrimaryTarget(project))}</strong>
                             <div class="inline-url-row">
-                              <p>${escapeHtml(projectUrl || 'No public URL is available yet')}</p>
-                              ${projectUrl ? `<button type="button" class="secondary inline-copy-button" data-action="open-url" aria-label="Open public URL">
+                              <p>${escapeHtml(projectUrl || t('noPublicUrl'))}</p>
+                              ${projectUrl ? `<button type="button" class="secondary inline-copy-button" data-action="open-url" aria-label="${t('open')}">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
-                                Open
+                                ${t('open')}
                               </button>` : ''}
-                              ${!projectUrl && project.shareMode !== 'stable' ? `<button type="button" class="secondary inline-copy-button" data-action="regenerate-url" aria-label="Generate public URL" ${!shareToolReady ? 'disabled' : ''}>
+                              ${!projectUrl && project.shareMode !== 'stable' ? `<button type="button" class="secondary inline-copy-button" data-action="regenerate-url" aria-label="${t('createPublicUrl')}" ${!shareToolReady ? 'disabled' : ''}>
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                                Refresh URL
+                                ${t('refreshUrl')}
                               </button>` : ''}
                             </div>
                           </div>
@@ -710,7 +794,7 @@ function render() {
 
                         ${renderUsagePanel(tunnelStatus)}
                       `
-                      : '<p class="empty-copy">Create or select a project to start sharing.</p>'
+                      : `<p class="empty-copy">${t('createOrSelect')}</p>`
                   }
                 </article>
               `
@@ -719,36 +803,36 @@ function render() {
                     <article class="panel compact-panel">
                       <div class="panel-header">
                         <div>
-                          <p class="eyebrow">Setup</p>
-                          <h2>Share tool and tunnel setup</h2>
+                          <p class="eyebrow">${t('setup')}</p>
+                          <h2>${t('shareToolSetup')}</h2>
                         </div>
                       </div>
                       <div class="metric-grid">
                         <div class="metric-card metric-card-split">
                           <div class="metric-card-copy">
-                            <span class="summary-label">Share Tool</span>
+                            <span class="summary-label">${t('shareTool')}</span>
                             <strong>${escapeHtml(shareToolStatusLabel)} <span class="pill ${shareToolStatusBadgeClass}">${escapeHtml(shareToolStatusLabel)}</span></strong>
                             <p>${escapeHtml(shareToolStatusMessage)}</p>
                           </div>
                           <div class="action-row">
                             ${
                               shareToolReady
-                                ? '<button type="button" class="secondary" data-action="ensure-cloudflared">Recheck cloudflared</button>'
+                                ? `<button type="button" class="secondary" data-action="ensure-cloudflared">${t('recheckCloudflared')}</button>`
                                 : `
-                                  <button type="button" data-action="install-cloudflared">Install cloudflared</button>
-                                  <button type="button" class="secondary" data-action="ensure-cloudflared">Check setup</button>
+                                  <button type="button" data-action="install-cloudflared">${t('installCloudflared')}</button>
+                                  <button type="button" class="secondary" data-action="ensure-cloudflared">${t('checkSetup')}</button>
                                 `
                             }
                           </div>
                         </div>
                         <div class="metric-card metric-card-split">
                           <div class="metric-card-copy">
-                            <span class="summary-label">Setup tunnel</span>
+                            <span class="summary-label">${t('setupTunnel')}</span>
                             <strong>${escapeHtml(setupTunnelStatusLabel)} <span class="pill ${setupTunnelStatusBadgeClass}">${escapeHtml(setupTunnelStatusLabel)}</span></strong>
                             <p>${escapeHtml(setupTunnelStatusMessage)}</p>
                           </div>
                           <div class="action-row">
-                            <button type="button" class="secondary" disabled>Not needed</button>
+                            <button type="button" class="secondary" disabled>${t('notNeeded')}</button>
                           </div>
                         </div>
                       </div>
@@ -757,14 +841,14 @@ function render() {
                  <article class="panel compact-panel">
                     <div class="panel-header">
                       <div>
-                        <p class="eyebrow">Defaults</p>
-                        <h2>App settings</h2>
+                        <p class="eyebrow">${t('defaults')}</p>
+                        <h2>${t('appSettings')}</h2>
                       </div>
                     </div>
                     <form id="settings-form" class="form-grid">
-                      <label>Custom cloudflared path (optional)<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="Leave blank to use default" /></label>
-                      <label>Local service URL<input name="defaultServiceURL" value="${escapeHtml(appState.settings.defaultServiceURL)}" /></label>
-                      <div class="action-row wide"><button type="submit">Save Settings</button></div>
+                      <label>${t('cloudflaredPath')}<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="${t('leaveBlankDefault')}" /></label>
+                      <label>${t('localServiceUrl')}<input name="defaultServiceURL" value="${escapeHtml(appState.settings.defaultServiceURL)}" /></label>
+                      <div class="action-row wide"><button type="submit">${t('save')}</button></div>
                     </form>
                   </article>
                  `
@@ -773,10 +857,10 @@ function render() {
                   <section class="panel logs-panel">
                     <div class="panel-header">
                       <div>
-                        <p class="eyebrow">Logs</p>
-                        <h2>cloudflared and npm output</h2>
+                        <p class="eyebrow">${t('logs')}</p>
+                        <h2>${t('logsSubtitle')}</h2>
                       </div>
-                      <span class="pill pill-outline">${escapeHtml(`${appState.status.lastLogs.length} entries`)}</span>
+                      <span class="pill pill-outline">${escapeHtml(`${appState.status.lastLogs.length} ${t('entries')}`)}</span>
                     </div>
                     <div class="log-stream">${logRows(appState.status.lastLogs)}</div>
                   </section>
@@ -785,36 +869,36 @@ function render() {
                   <article class="panel compact-panel">
                     <div class="panel-header">
                       <div>
-                        <p class="eyebrow">Application</p>
+                        <p class="eyebrow">${t('application')}</p>
                         <h2>Exposely</h2>
                       </div>
                     </div>
                     <div class="metric-grid">
                       <div class="metric-card">
-                         <span class="summary-label">Version</span>
+                         <span class="summary-label">${t('version')}</span>
                          <strong>${escapeHtml(displayVersionLabel(appState.productVersion))}</strong>
                       </div>
                       <div class="metric-card">
-                         <span class="summary-label">Platform</span>
+                         <span class="summary-label">${t('platform')}</span>
                          <strong>Windows</strong>
                       </div>
                     </div>
                     <div class="metric-grid" style="margin-top: 20px;">
                       <div class="metric-card">
-                        <span class="summary-label">Updates</span>
-                        <strong>${escapeHtml(appState.update.available ? `${displayVersionLabel(appState.update.latestVersion)} available` : appState.update.checked ? 'Up to date' : 'Checking in background')}</strong>
-                        <p style="margin-top: 10px; color: var(--text-secondary);">${escapeHtml(appState.update.message || 'The app can check GitHub releases for new versions.')}</p>
+                        <span class="summary-label">${t('updates')}</span>
+                        <strong>${escapeHtml(appState.update.available ? `${displayVersionLabel(appState.update.latestVersion)} ${t('available')}` : appState.update.checked ? t('upToDate') : t('checkingBackground'))}</strong>
+                        <p style="margin-top: 10px; color: var(--text-secondary);">${escapeHtml(appState.update.message || t('updateHint'))}</p>
                         <div class="action-row" style="margin-top: 14px;">
-                          <button type="button" class="secondary" data-action="check-updates">Check Now</button>
-                          <button type="button" ${appState.update.available ? '' : 'disabled'} data-action="install-latest-update">Update Now</button>
-                          <button type="button" ${appState.update.releaseUrl ? '' : 'disabled'} data-action="open-latest-release">Open Release</button>
+                          <button type="button" class="secondary" data-action="check-updates">${t('checkNow')}</button>
+                          <button type="button" ${appState.update.available ? '' : 'disabled'} data-action="install-latest-update">${t('updateNow')}</button>
+                          <button type="button" ${appState.update.releaseUrl ? '' : 'disabled'} data-action="open-latest-release">${t('openRelease')}</button>
                         </div>
                       </div>
                     </div>
                     <div style="padding: 24px; color: var(--text-secondary); line-height: 1.6;">
-                      <p>Manage your Cloudflare Tunnels easily. This application provides a graphical interface to create and manage tunnel URLs for your local projects using Cloudflare's <code>cloudflared</code> tool.</p>
-                      <p style="margin-top: 16px;">Created for developers to simplify the process of sharing local services with the world securely.</p>
-                      <p style="margin-top: 16px; color: var(--text-primary); font-weight: 500;">License developed by Reaksmey Kem</p>
+                      <p>${t('aboutDescription')}</p>
+                      <p style="margin-top: 16px;">${t('aboutCreator')}</p>
+                      <p style="margin-top: 16px; color: var(--text-primary); font-weight: 500;">${t('aboutLicense')}</p>
                     </div>
                   </article>
                `
@@ -879,23 +963,29 @@ async function confirmProjectSwitch(nextProjectID: string): Promise<boolean> {
   if (!state.appState?.status.running) return true;
   if (!state.activeProjectId || state.activeProjectId === nextProjectID) return true;
 
-  return window.confirm('Another project is currently running. Stop the current project and continue with this one?');
+  return window.confirm(t('confirmSwitchProject'));
 }
 
 function bindForms() {
+  const projectSearch = root.querySelector<HTMLInputElement>('#project-search');
+  projectSearch?.addEventListener('input', () => {
+    state.projectSearch = projectSearch.value;
+    render();
+  });
+
   const licenseForm = root.querySelector<HTMLFormElement>('#license-form');
   licenseForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const token = formValue(licenseForm, 'licenseToken');
     state.licenseDraft = token;
-    const next = await withAction('Activating license...', () => api.activateLicense(token));
+    const next = await withAction(t('loadingBackend'), () => api.activateLicense(token));
     if (next) {
       state.appState = next;
       state.licenseDraft = '';
       if (next.license.isAdmin && state.activeTab !== 'settings') {
         state.activeTab = 'settings';
       }
-      setNotice('success', next.license.message || 'License activated');
+      setNotice('success', next.license.message || t('settingsSaved'));
     }
   });
 
@@ -907,10 +997,10 @@ function bindForms() {
         cloudflaredPath: formValue(settingsForm, 'cloudflaredPath'),
         defaultServiceURL: formValue(settingsForm, 'defaultServiceURL'),
       };
-    const next = await withAction('Saving settings...', () => api.saveSettings(payload));
+    const next = await withAction(t('save'), () => api.saveSettings(payload));
     if (next) {
       state.appState = next;
-      setNotice('success', 'Settings saved');
+      setNotice('success', t('settingsSaved'));
     }
   });
 
@@ -939,19 +1029,39 @@ function bindForms() {
       publicURL: state.editorProject.publicURL,
       shareMode: state.editorProject.shareMode,
     };
-    const next = await withAction('Saving project...', () => api.saveProject(payload));
+    const next = await withAction(t('saveProject'), () => api.saveProject(payload));
     if (!next) return;
 
     state.appState = next;
     const savedProjectId = payload.id || (next.settings.projects[next.settings.projects.length - 1]?.id ?? null);
     state.selectedProjectId = savedProjectId;
     state.editorOpen = false;
-    setNotice('success', 'Project preset saved');
+    setNotice('success', t('projectSaved'));
   });
 }
 
 async function handleAction(action: string, id: string | null) {
   switch (action) {
+    case 'toggle-lang': {
+      const newLang = getLang() === 'en' ? 'km' : 'en';
+      setLang(newLang);
+      if (state.appState) {
+        state.appState.settings.language = newLang;
+        api.saveSettings(state.appState.settings);
+      }
+      render();
+      return;
+    }
+    case 'toggle-theme': {
+      const newTheme = nextTheme();
+      setTheme(newTheme);
+      if (state.appState) {
+        state.appState.settings.theme = newTheme;
+        api.saveSettings(state.appState.settings);
+      }
+      render();
+      return;
+    }
     case 'tab-overview':
       state.activeTab = 'overview';
       state.projectMenuOpen = false;
@@ -1001,18 +1111,18 @@ async function handleAction(action: string, id: string | null) {
       render();
       return;
     case 'clear-license': {
-      const next = await withAction('Removing license...', () => api.clearLicense());
+      const next = await withAction(t('settings'), () => api.clearLicense());
       if (next) {
         state.appState = next;
         state.licenseDraft = '';
         state.activeTab = 'settings';
-        setNotice('success', 'License removed');
+        setNotice('success', t('settingsSaved'));
       }
       return;
     }
     case 'browse-project-folder': {
       syncEditorFromForm();
-      const result = await withAction('Opening folder picker...', () => api.browseProjectFolder(state.editorProject.projectPath));
+      const result = await withAction(t('browse'), () => api.browseProjectFolder(state.editorProject.projectPath));
       if (typeof result === 'string' && result) {
         const inferredLocalHost = inferLocalHostFromPath(result);
         state.editorProject.projectPath = result;
@@ -1035,7 +1145,7 @@ async function handleAction(action: string, id: string | null) {
       if (!project || !state.appState) return;
       const url = resolvedProjectURL(project, state.appState);
       if (!url) {
-        setNotice('error', 'No public URL is available for the selected project');
+        setNotice('error', t('noPublicUrlForProject'));
         return;
       }
       await navigator.clipboard.writeText(url);
@@ -1054,7 +1164,7 @@ async function handleAction(action: string, id: string | null) {
   }
 
   if (!id && ['share-project', 'share-random', 'share-quick', 'regenerate-url', 'open-url', 'npm-build', 'test-project', 'delete-project'].includes(action)) {
-    setNotice('error', 'Select a project first');
+    setNotice('error', t('selectProjectFirst'));
     return;
   }
 
@@ -1067,20 +1177,20 @@ async function handleAction(action: string, id: string | null) {
         return;
       }
 
-      const refreshed = await withAction('Checking tunnel state...', () => api.refreshState());
+      const refreshed = await withAction(t('refreshState'), () => api.refreshState());
       if (!refreshed) return;
       state.appState = refreshed;
 
       if (refreshed.status.running) {
-        setNotice('info', 'A tunnel is already running. Stop it first before starting again.');
+        setNotice('info', t('tunnelAlreadyRunning'));
         return;
       }
 
       try {
-        setBusy('Starting tunnel...');
+        setBusy(t('startTunnel'));
         const next = await api.startTunnel();
         state.appState = next;
-        setNotice('success', 'Named tunnel started');
+        setNotice('success', t('namedTunnelStarted'));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.toLowerCase().includes('already running')) {
@@ -1088,7 +1198,7 @@ async function handleAction(action: string, id: string | null) {
           if (latest) {
             state.appState = latest;
           }
-          setNotice('info', 'A tunnel is already running. Stop it first before starting again.');
+          setNotice('info', t('tunnelAlreadyRunning'));
         } else {
           setNotice('error', message);
         }
@@ -1098,102 +1208,102 @@ async function handleAction(action: string, id: string | null) {
       return;
     }
     case 'ensure-cloudflared': {
-      const next = await withAction('Checking cloudflared setup...', () => api.ensureCloudflared());
+      const next = await withAction(t('checkSetup'), () => api.ensureCloudflared());
       if (next) {
         state.appState = next;
-        setNotice('success', 'cloudflared is ready to create public URLs.');
+        setNotice('success', t('cloudflaredReadyNotice'));
       }
       return;
     }
     case 'install-cloudflared': {
-      const next = await withAction('Installing cloudflared...', () => api.installCloudflared());
+      const next = await withAction(t('installCloudflared'), () => api.installCloudflared());
       if (next) {
         state.appState = next;
-        setNotice('success', 'cloudflared installed successfully.');
+        setNotice('success', t('cloudflaredInstalled'));
       }
       return;
     }
     case 'stop-tunnel': {
-      const next = await withAction('Stopping tunnel...', () => api.stopTunnel());
+      const next = await withAction(t('stop'), () => api.stopTunnel());
       if (next) {
         state.appState = next;
         state.activeProjectId = null;
-        setNotice('success', 'Tunnel stopped');
+        setNotice('success', t('tunnelStopped'));
       }
       return;
     }
     case 'create-tunnel': {
-      const next = await withAction('Ensuring named tunnel...', () => api.createTunnel());
+      const next = await withAction(t('setupTunnel'), () => api.createTunnel());
       if (next) {
         state.appState = next;
-        setNotice('success', 'Named tunnel is ready');
+        setNotice('success', t('namedTunnelReady'));
       }
       return;
     }
     case 'open-config':
-      await withAction('Opening config file...', () => api.openConfigFile());
+      await withAction(t('open'), () => api.openConfigFile());
       return;
     case 'open-settings':
-      await withAction('Opening settings file...', () => api.openSettingsFile());
+      await withAction(t('openSettings'), () => api.openSettingsFile());
       return;
     case 'open-latest-release':
-      await withAction('Opening latest release...', () => api.openLatestRelease());
+      await withAction(t('openRelease'), () => api.openLatestRelease());
       return;
     case 'install-latest-update':
       {
-        const message = await withAction('Downloading and opening the latest update...', () => api.installLatestUpdate());
+        const message = await withAction(t('updateNow'), () => api.installLatestUpdate());
         if (typeof message === 'string' && message) {
           setNotice('success', message);
         }
       }
       return;
     case 'check-updates': {
-      const next = await withAction('Checking for updates...', () => api.checkForUpdates());
+      const next = await withAction(t('checkNow'), () => api.checkForUpdates());
       if (next) {
         state.appState = next;
-        setNotice(next.update.available ? 'info' : 'success', next.update.message || 'Update check finished');
+        setNotice(next.update.available ? 'info' : 'success', next.update.message || t('stateRefreshed'));
       }
       return;
     }
     case 'refresh': {
-      const next = await withAction('Refreshing state...', () => api.refreshState());
+      const next = await withAction(t('refreshState'), () => api.refreshState());
       if (next) {
         state.appState = next;
         if (!state.activeProjectId && next.status.running) {
           state.activeProjectId = inferActiveProjectId(next);
         }
-        setNotice('success', 'State refreshed');
+        setNotice('success', t('stateRefreshed'));
       }
       return;
     }
     case 'share-project': {
       if (!(await confirmProjectSwitch(id!))) return;
       if (state.appState?.status.running && state.activeProjectId && state.activeProjectId !== id) {
-        const stopped = await withAction('Stopping current project...', () => api.stopTunnel());
+        const stopped = await withAction(t('stop'), () => api.stopTunnel());
         if (!stopped) return;
         state.appState = stopped;
         state.activeProjectId = null;
       }
-      const next = await withAction('Sharing project...', () => api.shareProject(id!));
+      const next = await withAction(t('createPublicUrl'), () => api.shareProject(id!));
       if (next) {
         state.appState = next;
         state.activeProjectId = id!;
         if (next.status.activeUrl || next.status.quickUrl) {
           state.projectUrls[id!] = next.status.activeUrl || next.status.quickUrl;
         }
-        setNotice('success', 'Project shared through named tunnel');
+        setNotice('success', t('projectShared'));
       }
       return;
     }
     case 'share-random': {
       if (!(await confirmProjectSwitch(id!))) return;
       if (state.appState?.status.running && state.activeProjectId && state.activeProjectId !== id) {
-        const stopped = await withAction('Stopping current project...', () => api.stopTunnel());
+        const stopped = await withAction(t('stop'), () => api.stopTunnel());
         if (!stopped) return;
         state.appState = stopped;
         state.activeProjectId = null;
       }
-      const next = await withAction('Generating random hostname...', () => api.shareProjectWithRandomURL(id!));
+      const next = await withAction(t('createPublicUrl'), () => api.shareProjectWithRandomURL(id!));
       if (next) {
         state.appState = next;
         state.activeProjectId = id!;
@@ -1203,19 +1313,19 @@ async function handleAction(action: string, id: string | null) {
             state.projectUrls[id!] = savedProject.publicURL;
           }
         }
-        setNotice('success', 'Random domain share is active');
+        setNotice('success', t('randomDomainActive'));
       }
       return;
     }
     case 'share-quick': {
       if (!(await confirmProjectSwitch(id!))) return;
       if (state.appState?.status.running && state.activeProjectId && state.activeProjectId !== id) {
-        const stopped = await withAction('Stopping current project...', () => api.stopTunnel());
+        const stopped = await withAction(t('stop'), () => api.stopTunnel());
         if (!stopped) return;
         state.appState = stopped;
         state.activeProjectId = null;
       }
-      const next = await withAction('Creating Cloudflare tunnel URL...', () => api.startQuickTunnel(id!));
+      const next = await withAction(t('createPublicUrl'), () => api.startQuickTunnel(id!));
       if (next) {
         state.appState = next;
         state.activeProjectId = id!;
@@ -1223,7 +1333,7 @@ async function handleAction(action: string, id: string | null) {
         if (next.status.activeUrl || next.status.quickUrl) {
           state.projectUrls[id!] = next.status.activeUrl || next.status.quickUrl;
         }
-        setNotice('success', 'Cloudflare tunnel URL is live');
+        setNotice('success', t('tunnelLive'));
       }
       return;
     }
@@ -1232,14 +1342,14 @@ async function handleAction(action: string, id: string | null) {
       if (!project) return;
       if (!(await confirmProjectSwitch(project.id))) return;
       if (state.appState?.status.running) {
-        const stopped = await withAction('Stopping current project...', () => api.stopTunnel());
+        const stopped = await withAction(t('stop'), () => api.stopTunnel());
         if (!stopped) return;
         state.appState = stopped;
         state.activeProjectId = null;
       }
 
       const next = await withAction(
-        'Generating new Cloudflare tunnel URL...',
+        t('refreshUrl'),
         () => api.startQuickTunnel(project.id),
       );
         if (next) {
@@ -1249,31 +1359,31 @@ async function handleAction(action: string, id: string | null) {
           if (next.status.activeUrl || next.status.quickUrl) {
             state.projectUrls[project.id] = next.status.activeUrl || next.status.quickUrl;
           }
-          setNotice('success', 'New public URL generated');
+          setNotice('success', t('newUrlGenerated'));
         }
         return;
     }
     case 'open-url':
-      await withAction('Opening public URL...', () => api.openPublicURL(id!));
+      await withAction(t('open'), () => api.openPublicURL(id!));
       return;
     case 'npm-build': {
-      const result = await withAction('Running npm build...', () => api.runNpmBuild(id!));
-      if (result !== undefined) setNotice('success', 'npm build started. Watch the log stream for progress');
+      const result = await withAction('npm build', () => api.runNpmBuild(id!));
+      if (result !== undefined) setNotice('success', t('npmBuildStarted'));
       return;
     }
     case 'test-project': {
-      const result = await withAction('Testing local URL...', () => api.testProject(id!));
+      const result = await withAction(t('localUrl'), () => api.testProject(id!));
       if (typeof result === 'string') setNotice('success', result);
       return;
     }
     case 'delete-project':
-      if (window.confirm('Delete this project preset?')) {
-        const next = await withAction('Deleting project...', () => api.deleteProject(id!));
+      if (window.confirm(t('confirmDeleteProject'))) {
+        const next = await withAction(t('deleteProject'), () => api.deleteProject(id!));
         if (next) {
           state.appState = next;
           state.selectedProjectId = next.settings.projects[0]?.id ?? null;
           state.projectMenuOpen = false;
-          setNotice('success', 'Project deleted');
+          setNotice('success', t('projectDeleted'));
         }
       }
       return;
@@ -1319,13 +1429,15 @@ async function bootstrap() {
     // Ignore runtime window sizing failures outside the packaged desktop app.
   }
 
-  const next = await withAction('Loading app state...', () => api.bootstrap());
+  const next = await withAction(t('loadingBackend'), () => api.bootstrap());
   if (!next) {
-    state.fatalError = 'Failed to load initial application state. Please ensure the backend is running.';
+    state.fatalError = t('initLoadError');
     render();
     return;
   }
   state.appState = next;
+  setLang(next.settings.language || 'en');
+  setTheme(next.settings.theme || 'dark');
   syncProjectUrlsFromState(next);
   state.selectedProjectId = next.settings.projects[0]?.id ?? null;
   state.activeProjectId = inferActiveProjectId(next);
@@ -1334,7 +1446,7 @@ async function bootstrap() {
   void api.checkForUpdates().then((latest) => {
     state.appState = latest;
     if (latest.update.available) {
-      setNotice('info', latest.update.message || `Exposely ${displayVersionLabel(latest.update.latestVersion)} is available.`);
+      setNotice('info', latest.update.message || `Exposely ${displayVersionLabel(latest.update.latestVersion)} ${t('available')}.`);
       return;
     }
     render();

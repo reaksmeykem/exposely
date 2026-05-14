@@ -19,6 +19,8 @@ export interface AppSettings {
   cloudflaredPath: string;
   defaultServiceURL: string;
   licenseToken?: string;
+  language: string;
+  theme?: 'dark' | 'light';
   projects: ProjectPreset[];
 }
 
