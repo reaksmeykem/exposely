@@ -76,7 +76,7 @@ func (r *cliRunner) startHTMLTunnel(settingsValue models.AppSettings, project mo
 		}
 	}
 
-	if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server); err != nil {
+	if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 		if server != nil {
 			_ = server.Shutdown(context.Background())
 		}
@@ -96,7 +96,7 @@ func (r *cliRunner) startAutoTunnel(settingsValue models.AppSettings, project mo
 		if err != nil {
 			return err
 		}
-		if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil); err != nil {
+		if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 			r.stopProjectCommand()
 			return err
 		}
@@ -110,7 +110,7 @@ func (r *cliRunner) startAutoTunnel(settingsValue models.AppSettings, project mo
 		if err := checkCLIHTTPService(serviceURL); err != nil {
 			return fmt.Errorf("local URL is not reachable: %w", err)
 		}
-		if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil); err != nil {
+		if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 			return err
 		}
 		return r.waitUntilInterrupted()
@@ -141,7 +141,7 @@ func (r *cliRunner) startAutoTunnel(settingsValue models.AppSettings, project mo
 	if err != nil {
 		return err
 	}
-	if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server); err != nil {
+	if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 		_ = server.Shutdown(context.Background())
 		return err
 	}
@@ -156,11 +156,11 @@ func (r *cliRunner) startQuickTunnel(settingsValue models.AppSettings, project m
 	if err != nil {
 		return err
 	}
-	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, r.envKitInfo())
 	if err != nil {
 		return err
 	}
-	if err := r.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost); err != nil {
+	if err := r.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 		return err
 	}
 	return r.waitUntilInterrupted()
@@ -196,7 +196,7 @@ func (r *cliRunner) shareProjectThroughNamedTunnel(settingsValue models.AppSetti
 	}
 	cfg.Tunnel = info.ID
 	cfg.CredentialsFile = info.CredentialsFile
-	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, r.envKitInfo())
 	if err != nil {
 		return err
 	}
@@ -204,7 +204,9 @@ func (r *cliRunner) shareProjectThroughNamedTunnel(settingsValue models.AppSetti
 		Hostname: hostname,
 		Service:  originServiceURL,
 		OriginRequest: &cloudflare.OriginRequest{
-			HTTPHostHeader: project.LocalHost,
+			HTTPHostHeader:   project.LocalHost,
+			NoTLSVerify:      settingsValue.InsecureSkipOriginTLS,
+			OriginServerName: cliOriginServerNameForLoopbackHTTPS(originServiceURL, project.LocalHost),
 		},
 	})
 	cloudflare.EnsureFallback(&cfg)
@@ -307,6 +309,23 @@ func (r *cliRunner) waitForProjectServiceURL(project models.ProjectPreset, urlCh
 			return "", errors.New("could not detect a running local project URL. Set --url explicitly or use a start command that exposes a local HTTP server")
 		}
 	}
+}
+
+// cliOriginServerNameForLoopbackHTTPS returns the SNI value cloudflared
+// should use when dialing an HTTPS upstream that lives on the loopback
+// address (EnvKit / Herd / Laragon-style). The CLI keeps its own copy of
+// this logic to avoid pulling app.go internals across the cmd package
+// boundary.
+func cliOriginServerNameForLoopbackHTTPS(serviceURL, hostHeader string) string {
+	trimmedHost := strings.TrimSpace(hostHeader)
+	if trimmedHost == "" {
+		return ""
+	}
+	lower := strings.ToLower(strings.TrimSpace(serviceURL))
+	if !strings.HasPrefix(lower, "https://127.0.0.1") && !strings.HasPrefix(lower, "https://localhost") {
+		return ""
+	}
+	return trimmedHost
 }
 
 func (r *cliRunner) waitUntilInterrupted() error {

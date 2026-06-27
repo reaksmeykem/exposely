@@ -250,11 +250,24 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 	return nil
 }
 
-func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader string) error {
-	return m.StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHeader, 0, nil)
+// QuickTunnelOptions controls the cloudflared flags used by StartQuickTunnel
+// beyond the service URL and host header. The zero value is safe and matches
+// what earlier Exposely versions sent.
+type QuickTunnelOptions struct {
+	// InsecureSkipOriginTLS, when true, adds --no-tls-verify so cloudflared
+	// will dial the upstream over HTTPS without validating its certificate.
+	// Intended for local dev stacks (EnvKit, Herd, Laragon with self-signed
+	// or wildcard-cert quirks) where the cert may not cover every shared
+	// host. The connection is still loopback-only so the practical risk is
+	// small, but the toggle is opt-in and surfaced in the UI.
+	InsecureSkipOriginTLS bool
 }
 
-func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHeader string, htmlPort int, htmlServer *http.Server) error {
+func (m *Manager) StartQuickTunnel(cloudflaredPath, serviceURL, hostHeader string, opts QuickTunnelOptions) error {
+	return m.StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHeader, 0, nil, opts)
+}
+
+func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHeader string, htmlPort int, htmlServer *http.Server, opts QuickTunnelOptions) error {
 	m.mu.Lock()
 	if m.cmd != nil && m.cmd.Process != nil {
 		m.mu.Unlock()
@@ -268,7 +281,7 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 	}
 
 	metricsAddr := reserveMetricsAddr(m)
-	args := quickTunnelArgs(serviceURL, hostHeader)
+	args := quickTunnelArgs(serviceURL, hostHeader, opts)
 	if metricsAddr != "" {
 		args = append(args, "--metrics", metricsAddr)
 	}
@@ -338,12 +351,35 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 	}
 }
 
-func quickTunnelArgs(serviceURL, hostHeader string) []string {
+func quickTunnelArgs(serviceURL, hostHeader string, opts QuickTunnelOptions) []string {
 	args := []string{"tunnel", "--url", serviceURL}
 
 	trimmedHostHeader := strings.TrimSpace(hostHeader)
 	if trimmedHostHeader != "" {
-		return append(args, "--http-host-header", trimmedHostHeader)
+		args = append(args, "--http-host-header", trimmedHostHeader)
+		// When the upstream is HTTPS on the loopback address (typical of
+		// EnvKit / Herd / Laragon HTTPS setups), the URL host is 127.0.0.1
+		// but the cert is issued for the host header (e.g. *.test). Pass
+		// the host header as the origin-server-name so the TLS handshake
+		// uses the correct SNI and the cert validates.
+		if strings.HasPrefix(serviceURL, "https://127.0.0.1") || strings.HasPrefix(serviceURL, "https://localhost") {
+			args = append(args, "--origin-server-name", trimmedHostHeader)
+		}
+		if opts.InsecureSkipOriginTLS {
+			args = append(args, "--no-tls-verify")
+		}
+		// We have a host header — the upstream is a local-host stack and
+		// the proxy-connect-timeout is not needed. Just pin the edge IP
+		// family like the rest of the function does.
+		return append(args, "--edge-ip-version", "4")
+	}
+
+	if opts.InsecureSkipOriginTLS {
+		// Opt-in escape hatch for local dev stacks whose cert does not
+		// cover the host being shared (EnvKit wildcard SANs that Go's
+		// strict verifier rejects, self-signed certs, etc.). The tunnel
+		// is still local so the practical risk is small.
+		args = append(args, "--no-tls-verify")
 	}
 
 	if strings.HasPrefix(serviceURL, "http://127.0.0.1") || strings.HasPrefix(serviceURL, "http://localhost") {

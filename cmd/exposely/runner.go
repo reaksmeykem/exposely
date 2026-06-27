@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/reaksmeykem/exposely/internal/cloudflare"
+	"github.com/reaksmeykem/exposely/internal/localstack"
 	"github.com/reaksmeykem/exposely/internal/models"
 	"github.com/reaksmeykem/exposely/internal/settings"
 )
@@ -41,6 +42,26 @@ type cliRunner struct {
 
 	lastQuickURL string
 	useColor     bool
+
+	envkitMu sync.RWMutex
+	envkit   localstack.Info
+}
+
+// envKitInfo returns the cached EnvKit detection result. It is refreshed on
+// runner construction; share flows that need an up-to-the-second snapshot can
+// call refreshEnvKit first.
+func (r *cliRunner) envKitInfo() localstack.Info {
+	r.envkitMu.RLock()
+	defer r.envkitMu.RUnlock()
+	return r.envkit
+}
+
+func (r *cliRunner) refreshEnvKit() localstack.Info {
+	info := localstack.DetectEnvKit()
+	r.envkitMu.Lock()
+	r.envkit = info
+	r.envkitMu.Unlock()
+	return info
 }
 
 func newCLIRunner() (*cliRunner, error) {
@@ -71,6 +92,7 @@ func newCLIRunner() (*cliRunner, error) {
 		runner.handleLog,
 		runner.handleStatus,
 	)
+	runner.envkit = localstack.DetectEnvKit()
 	return runner, nil
 }
 
@@ -101,7 +123,37 @@ func (r *cliRunner) printStatus() error {
 	if detectErr != nil {
 		fmt.Printf("cloudflared error: %v\n", detectErr)
 	}
+	r.printEnvKitStatus()
 	return nil
+}
+
+// printEnvKitStatus reports whether EnvKit was detected on this host. When
+// detected and the user has not customised the default origin, the CLI hints
+// that Exposely will route traffic through EnvKit's HTTPS URL automatically.
+func (r *cliRunner) printEnvKitStatus() {
+	info := r.refreshEnvKit()
+	if !info.Detected {
+		return
+	}
+	version := info.Version
+	if version == "" {
+		version = "unknown"
+	}
+	fmt.Printf("EnvKit:    detected (%s) at %s\n", version, info.InstallPath)
+	if localstack.IsBuiltInDefaultServiceURL(r.currentDefaultServiceURL()) {
+		fmt.Printf("EnvKit:    default origin swapped to %s\n", info.SuggestedOriginURL)
+	}
+}
+
+// currentDefaultServiceURL returns the saved default service URL so the CLI
+// can decide whether to apply the EnvKit fallback without re-reading settings
+// everywhere. Returns "" when the store cannot be read.
+func (r *cliRunner) currentDefaultServiceURL() string {
+	settingsValue, err := r.store.Load()
+	if err != nil {
+		return ""
+	}
+	return settingsValue.DefaultServiceURL
 }
 
 func (r *cliRunner) printProjects() error {
@@ -545,7 +597,12 @@ func detectCLIStaticSiteDir(projectDir string) (string, bool) {
 	return "", false
 }
 
-func resolveCLIProjectOriginServiceURL(project models.ProjectPreset, fallback string) (string, error) {
+// resolveCLIProjectOriginServiceURL mirrors app.resolveProjectOriginServiceURL
+// for the CLI: it picks project.OriginURL first, then settings.DefaultServiceURL,
+// and finally falls back to the EnvKit-suggested HTTPS origin when EnvKit is
+// detected and the user has not customised the default. This keeps the
+// desktop app and the CLI consistent in how they handle EnvKit installs.
+func resolveCLIProjectOriginServiceURL(project models.ProjectPreset, fallback string, envkit localstack.Info) (string, error) {
 	if serviceURL, ok, err := normalizeCLIServiceURL(project.OriginURL); ok {
 		if err != nil {
 			return "", fmt.Errorf("invalid project origin URL: %w", err)
@@ -556,7 +613,13 @@ func resolveCLIProjectOriginServiceURL(project models.ProjectPreset, fallback st
 		if err != nil {
 			return "", fmt.Errorf("invalid default service URL: %w", err)
 		}
+		if envkit.Detected && localstack.IsBuiltInDefaultServiceURL(fallback) {
+			return envkit.SuggestedOriginURL, nil
+		}
 		return serviceURL, nil
+	}
+	if envkit.Detected {
+		return envkit.SuggestedOriginURL, nil
 	}
 	return "", errors.New("a valid origin service URL is required")
 }

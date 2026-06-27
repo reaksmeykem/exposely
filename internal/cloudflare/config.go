@@ -24,8 +24,10 @@ type IngressRule struct {
 }
 
 type OriginRequest struct {
-	HTTPHostHeader string                 `yaml:"httpHostHeader,omitempty"`
-	Extra          map[string]interface{} `yaml:",inline"`
+	HTTPHostHeader   string                 `yaml:"httpHostHeader,omitempty"`
+	OriginServerName string                 `yaml:"originServerName,omitempty"`
+	NoTLSVerify      bool                   `yaml:"noTLSVerify,omitempty"`
+	Extra            map[string]interface{} `yaml:",inline"`
 }
 
 func ReadConfig(path string) (TunnelConfig, error) {

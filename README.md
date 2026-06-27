@@ -8,6 +8,7 @@ It supports:
 - static HTML folders
 - already running local URLs such as `http://127.0.0.1:5500`
 - auto-detected local projects that can use a folder, local URL, or start command
+- EnvKit ([envkit.net](https://envkit.net)) installs — detected automatically so `*.test` HTTPS sites tunnel with the right origin URL
 
 ## What Projects Work
 
@@ -22,12 +23,14 @@ Common project types that work:
 
 - Laravel behind Herd, Valet, Nginx, Apache, Caddy, or another local host based setup
 - Laravel running with `php artisan serve`
+- Laravel behind EnvKit's nginx/apache + PHP-FPM (auto-detected)
 - plain HTML and static websites
 - Tailwind sites that are already built or already running locally
 - Vite apps
 - React apps
 - Vue apps
 - Svelte apps
+- Next.js / Node dev servers behind EnvKit (auto-detected)
 - other local dev servers that expose a reachable HTTP URL
 
 Projects are less likely to work if they are only raw source files with no running dev server, no build output, and no local URL yet.
@@ -77,6 +80,37 @@ Use this when your project is:
 - already running on a local URL such as `http://127.0.0.1:5500`
 
 This also works well for built Tailwind sites and other frontend output folders that contain a real `index.html`.
+
+### EnvKit (auto-detected)
+
+If [EnvKit](https://envkit.net) is installed on the machine, Exposely detects it on launch (Windows: registry `Uninstall` entries; macOS: `/Applications/EnvKit.app`) and surfaces the install in the **Local dev stack** card under **Settings → Setup**.
+
+When EnvKit is detected and you have not changed the default service URL, Exposely switches the cloudflared upstream to `https://127.0.0.1:443` so your trusted-HTTPS `.test` site is tunneled instead of the bare HTTP loopback. The behaviour is opt-out: as soon as you set a custom `DefaultServiceURL` (or a per-project `OriginURL`), Exposely leaves it alone.
+
+What gets detected:
+
+- Windows: `DisplayName` starting with `EnvKit` in the standard Uninstall registry keys (HKLM, WOW6432Node, HKCU), with `InstallLocation` and `DisplayVersion` surfaced in the UI. Falls back to known install paths if the registry entry is missing.
+- macOS: `/Applications/EnvKit.app` (or `~/Applications/EnvKit.app`) plus the `~/Library/Application Support/EnvKit` data directory.
+- Version comes from `DisplayVersion` on Windows and `CFBundleShortVersionString` on macOS.
+
+You can verify detection from the CLI with:
+
+```powershell
+exposely status
+```
+
+When EnvKit is present you will see an `EnvKit:` line that lists the version, install path, and the swapped origin URL.
+
+#### Skip upstream TLS verification (opt-in)
+
+If EnvKit's certificate SAN list does not cover the host you want to share (e.g. it lists `*.test` but your registered sites do not include the host, or the wildcard SAN is rejected by Go's strict verifier), open **Settings → Defaults** and enable **Skip upstream TLS verification**.
+
+When the toggle is on:
+
+- `cloudflared` is started with `--no-tls-verify` for quick tunnels (and `noTLSVerify: true` on the ingress for named tunnels), so the upstream HTTPS handshake succeeds even if the cert does not cover the requested host.
+- The pre-flight reachability check also skips TLS verification, so you do not get blocked before the share starts.
+
+The connection is still loopback-only, so the practical risk is small, but the toggle is opt-in for a reason — leave it off for projects whose upstream certificate you actually want validated.
 
 ## Requirements
 

@@ -50,6 +50,10 @@ coverage.out
 .DS_Store
 Thumbs.db
 
+# Wails dev session logs
+wails-dev.err.log
+wails-dev.out.log
+
 # Local accidental folders
 /-Path/
 /-Value/

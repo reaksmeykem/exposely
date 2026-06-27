@@ -639,6 +639,10 @@ label {
   gap: 16px;
 }
 
+.metric-grid-section {
+  margin-top: 20px;
+}
+
 .metric-card {
   background: var(--bg-sidebar);
   border: 1px solid var(--border);
@@ -726,6 +730,51 @@ label {
 
 label.wide {
   grid-column: 1 / -1;
+}
+
+label.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  grid-column: 1 / -1;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+}
+
+label.checkbox-row input[type="checkbox"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+  width: auto;
+  min-width: 16px;
+  min-height: 16px;
+  padding: 0;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+label.checkbox-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+label.checkbox-row > span strong {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 0.95em;
+  display: block;
+}
+
+label.checkbox-row small.hint {
+  display: block;
+  color: var(--text-muted, #8b939b);
+  font-size: 0.85em;
+  font-weight: 400;
+  line-height: 1.5;
+  margin: 0;
 }
 
 .folder-picker {

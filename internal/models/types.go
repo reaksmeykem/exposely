@@ -24,25 +24,27 @@ type ProjectPreset struct {
 }
 
 type AppSettings struct {
-	DefaultDomain     string          `json:"defaultDomain"`
-	TunnelName        string          `json:"tunnelName"`
-	CloudflaredPath   string          `json:"cloudflaredPath"`
-	DefaultServiceURL string          `json:"defaultServiceURL"`
-	LicenseToken      string          `json:"licenseToken,omitempty"`
-	Language          string          `json:"language"`
-	Theme             string          `json:"theme"`
-	Projects          []ProjectPreset `json:"projects"`
+	DefaultDomain         string          `json:"defaultDomain"`
+	TunnelName            string          `json:"tunnelName"`
+	CloudflaredPath       string          `json:"cloudflaredPath"`
+	DefaultServiceURL     string          `json:"defaultServiceURL"`
+	InsecureSkipOriginTLS bool            `json:"insecureSkipOriginTls"`
+	LicenseToken          string          `json:"licenseToken,omitempty"`
+	Language              string          `json:"language"`
+	Theme                 string          `json:"theme"`
+	Projects              []ProjectPreset `json:"projects"`
 }
 
 func DefaultSettings() AppSettings {
 	return AppSettings{
-		DefaultDomain:     "example.com",
-		TunnelName:        "exposely",
-		CloudflaredPath:   "",
-		DefaultServiceURL: "http://127.0.0.1:80",
-		Language:          "en",
-		Theme:             "dark",
-		Projects:          []ProjectPreset{},
+		DefaultDomain:         "example.com",
+		TunnelName:            "exposely",
+		CloudflaredPath:       "",
+		DefaultServiceURL:     "http://127.0.0.1:80",
+		InsecureSkipOriginTLS: false,
+		Language:              "en",
+		Theme:                 "dark",
+		Projects:              []ProjectPreset{},
 	}
 }
 
@@ -68,6 +70,10 @@ type TunnelStatus struct {
 	DetectedCloudflaredPath string       `json:"detectedCloudflaredPath"`
 	ConfigPath              string       `json:"configPath"`
 	Usage                   *TunnelUsage `json:"usage,omitempty"`
+	EnvKitDetected          bool         `json:"envkitDetected"`
+	EnvKitVersion           string       `json:"envkitVersion"`
+	EnvKitPath              string       `json:"envkitPath"`
+	EnvKitOriginURL         string       `json:"envkitOriginUrl"`
 }
 
 // TunnelUsage captures live usage counters exposed by the local cloudflared

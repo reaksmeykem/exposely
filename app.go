@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/reaksmeykem/exposely/internal/cloudflare"
 	applicense "github.com/reaksmeykem/exposely/internal/license"
+	"github.com/reaksmeykem/exposely/internal/localstack"
 	"github.com/reaksmeykem/exposely/internal/models"
 	"github.com/reaksmeykem/exposely/internal/settings"
 	"github.com/reaksmeykem/exposely/internal/version"
@@ -52,6 +54,8 @@ type App struct {
 	lastStateMu sync.Mutex
 	updateMu    sync.RWMutex
 	updateInfo  models.UpdateInfo
+	envkitMu    sync.RWMutex
+	envkit      localstack.Info
 }
 
 func NewApp() (*App, error) {
@@ -75,7 +79,26 @@ func NewApp() (*App, error) {
 		deviceID:   resolveDeviceID(),
 	}
 	app.manager = cloudflare.NewManager(app.configPath, app.pushLog, app.pushStatus)
+	app.envkit = localstack.DetectEnvKit()
 	return app, nil
+}
+
+// refreshEnvKit re-runs the EnvKit detector and stores the result on the app.
+// Callers use this from share flows when they want the latest detection in
+// case EnvKit was installed after the app started.
+func (a *App) refreshEnvKit() localstack.Info {
+	info := localstack.DetectEnvKit()
+	a.envkitMu.Lock()
+	a.envkit = info
+	a.envkitMu.Unlock()
+	return info
+}
+
+// envKitInfo returns the latest cached EnvKit detection snapshot.
+func (a *App) envKitInfo() localstack.Info {
+	a.envkitMu.RLock()
+	defer a.envkitMu.RUnlock()
+	return a.envkit
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -117,6 +140,14 @@ func (a *App) RefreshState() (models.AppState, error) {
 	if detectErr == nil {
 		status.DetectedCloudflaredPath = detectedPath
 	}
+
+	// Refresh EnvKit detection so the UI sees installs that happened after
+	// Exposely was launched (and stays accurate across long sessions).
+	envkit := a.refreshEnvKit()
+	status.EnvKitDetected = envkit.Detected
+	status.EnvKitVersion = envkit.Version
+	status.EnvKitPath = envkit.InstallPath
+	status.EnvKitOriginURL = envkit.SuggestedOriginURL
 	if cfgErr == nil {
 		status.ActiveHostnames = cloudflare.HostnamesFromConfig(cfg)
 		status.TunnelID = cfg.Tunnel
@@ -376,7 +407,7 @@ func (a *App) startHTMLTunnel(project models.ProjectPreset) (models.AppState, er
 		}
 	}
 
-	if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server); err != nil {
+	if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 		if server != nil {
 			_ = server.Shutdown(context.Background())
 		}
@@ -404,7 +435,7 @@ func (a *App) startAutoTunnel(project models.ProjectPreset) (models.AppState, er
 		if err != nil {
 			return models.AppState{}, err
 		}
-		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil); err != nil {
+		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 			a.stopProjectCommand()
 			return models.AppState{}, err
 		}
@@ -418,7 +449,7 @@ func (a *App) startAutoTunnel(project models.ProjectPreset) (models.AppState, er
 		if err := checkLocalHTTPService(serviceURL); err != nil {
 			return models.AppState{}, fmt.Errorf("local URL is not reachable: %w", err)
 		}
-		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil); err != nil {
+		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 			return models.AppState{}, err
 		}
 		return a.RefreshState()
@@ -445,7 +476,7 @@ func (a *App) startAutoTunnel(project models.ProjectPreset) (models.AppState, er
 		if err != nil {
 			return models.AppState{}, err
 		}
-		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server); err != nil {
+		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", port, server, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 			_ = server.Shutdown(context.Background())
 			return models.AppState{}, err
 		}
@@ -535,6 +566,151 @@ func checkLocalHTTPService(serviceURL string) error {
 		return fmt.Errorf("%s responded with HTTP %d", serviceURL, resp.StatusCode)
 	}
 	return nil
+}
+
+// checkLocalOriginReachable verifies that the upstream cloudflared will
+// tunnel to is actually answering before we declare the share started.
+// Without this pre-flight the user gets a tunnel URL that 502s because the
+// upstream web server is offline. The hostHeader is used as the TLS SNI
+// when the upstream is HTTPS on the loopback address (EnvKit / Herd /
+// Laragon HTTPS-style setups), so the cert for *.test validates.
+//
+// When envkit.Detected is true and the upstream is unreachable the error
+// message is annotated with a hint to start EnvKit's nginx, which is by
+// far the most common cause.
+//
+// When insecureSkipOriginTLS is true the pre-flight dials without
+// validating the cert — this matches the flag that will be passed to
+// cloudflared via --no-tls-verify, so we don't reject a share we are
+// about to allow anyway.
+func checkLocalOriginReachable(serviceURL, hostHeader string, envkit localstack.Info, insecureSkipOriginTLS bool) error {
+	parsed, err := url.Parse(serviceURL)
+	if err != nil {
+		return fmt.Errorf("invalid origin URL %q: %w", serviceURL, err)
+	}
+
+	sni := strings.TrimSpace(hostHeader)
+	if sni == "" {
+		sni = parsed.Hostname()
+	}
+
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	if strings.EqualFold(parsed.Scheme, "https") {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{
+				ServerName:         sni,
+				InsecureSkipVerify: insecureSkipOriginTLS,
+				// Keep the system trust store so EnvKit's local CA still
+				// works — we only override SNI here, not verification.
+			},
+		}
+	}
+
+	req, err := http.NewRequest(http.MethodGet, serviceURL, nil)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(hostHeader) != "" {
+		req.Host = hostHeader
+		req.Header.Set("Host", hostHeader)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return classifyUpstreamError(serviceURL, hostHeader, envkit, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusInternalServerError {
+		return fmt.Errorf("%s responded with HTTP %d", serviceURL, resp.StatusCode)
+	}
+	return nil
+}
+
+// classifyUpstreamError turns a raw dial/HTTP error from checkLocalOriginReachable
+// into actionable guidance for the user. We distinguish three failure modes:
+//
+//   - "no listener" — the upstream port is closed (EnvKit's nginx is off).
+//   - "cert SAN mismatch" — the upstream is answering but its cert does not
+//     cover the host the project is asking for (very common with EnvKit when
+//     a .test site is not registered).
+//   - "other TLS error" — anything else in the TLS handshake.
+//
+// We inspect the underlying error string because Go's x509 package produces
+// stable, parseable messages of the form:
+// `x509: certificate is valid for A, B, C, not <requested>`.
+func classifyUpstreamError(serviceURL, hostHeader string, envkit localstack.Info, rawErr error) error {
+	msg := rawErr.Error()
+
+	// Cert SAN mismatch: extract the valid hosts from the standard x509 wording.
+	if strings.Contains(msg, "certificate is valid for") && strings.Contains(msg, ", not ") {
+		validPart := extractValidHosts(msg)
+		requested := strings.TrimSpace(hostHeader)
+		if requested == "" {
+			requested = "(unknown host)"
+		}
+		if envkit.Detected && isEnvKitOrigin(serviceURL) {
+			return fmt.Errorf(
+				"EnvKit's certificate at %s does not cover %q. Hosts covered by the cert: %s. "+
+					"Open EnvKit and register %s as a site (or, in Exposely, set a custom OriginURL on the project that points at a server whose cert covers %s): %w",
+				serviceURL, requested, validPart, requested, requested, rawErr,
+			)
+		}
+		return fmt.Errorf(
+			"the certificate at %s does not cover %q. Hosts covered by the cert: %s. "+
+				"Register %s with the upstream server or set a custom OriginURL on the project: %w",
+			serviceURL, requested, validPart, requested, rawErr,
+		)
+	}
+
+	// "no listener" path — the upstream port is closed.
+	if isConnectionRefused(msg) || isNoRoute(msg) {
+		if envkit.Detected && isEnvKitOrigin(serviceURL) {
+			return fmt.Errorf("EnvKit's nginx does not appear to be running on %s. Open EnvKit and start nginx (or another web server) before sharing: %w", serviceURL, rawErr)
+		}
+		return fmt.Errorf("upstream %s is not reachable: %w", serviceURL, rawErr)
+	}
+
+	// Fallback: any other transport / TLS / DNS error.
+	return fmt.Errorf("upstream %s is not reachable: %w", serviceURL, rawErr)
+}
+
+// extractValidHosts pulls the comma-separated SAN list out of a Go x509
+// error message of the form `...certificate is valid for A, B, C, not X`.
+func extractValidHosts(message string) string {
+	const marker = "certificate is valid for "
+	start := strings.Index(message, marker)
+	if start < 0 {
+		return "(unknown)"
+	}
+	rest := message[start+len(marker):]
+	end := strings.Index(rest, ", not ")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
+}
+
+// isConnectionRefused returns true for errors that mean "nobody is listening
+// on this port" — the most common cause when a local dev stack (EnvKit,
+// Herd, Laragon, …) is installed but its web server is stopped.
+func isConnectionRefused(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "actively refused") ||
+		strings.Contains(lower, "no connection could be made")
+}
+
+// isNoRoute covers "no route to host" so we can label it the same way.
+func isNoRoute(message string) bool {
+	return strings.Contains(strings.ToLower(message), "no route to host")
+}
+
+// isEnvKitOrigin returns true when the supplied URL matches the default
+// EnvKit upstream (https://127.0.0.1:443). Used to decide whether to print
+// the EnvKit-specific hint in error messages.
+func isEnvKitOrigin(serviceURL string) bool {
+	return strings.EqualFold(strings.TrimSpace(serviceURL), localstack.EnvKitOriginURL)
 }
 
 func (a *App) resolveProjectDirectory(projectPath string) (string, error) {
@@ -1165,7 +1341,7 @@ func (a *App) TestProject(projectID string) (string, error) {
 		return "", err
 	}
 
-	serviceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	serviceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, a.envKitInfo())
 	if err != nil {
 		return "", err
 	}
@@ -1229,15 +1405,20 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 	}
 	cfg.Tunnel = info.ID
 	cfg.CredentialsFile = info.CredentialsFile
-	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, a.envKitInfo())
 	if err != nil {
+		return models.AppState{}, err
+	}
+	if err := checkLocalOriginReachable(originServiceURL, project.LocalHost, a.envKitInfo(), settingsValue.InsecureSkipOriginTLS); err != nil {
 		return models.AppState{}, err
 	}
 	cloudflare.UpsertIngressRule(&cfg, cloudflare.IngressRule{
 		Hostname: hostname,
 		Service:  originServiceURL,
 		OriginRequest: &cloudflare.OriginRequest{
-			HTTPHostHeader: project.LocalHost,
+			HTTPHostHeader:   project.LocalHost,
+			NoTLSVerify:      settingsValue.InsecureSkipOriginTLS,
+			OriginServerName: originServerNameForLoopbackHTTPS(originServiceURL, project.LocalHost),
 		},
 	})
 	cloudflare.EnsureFallback(&cfg)
@@ -1280,11 +1461,15 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 		_ = a.manager.StopTunnel()
 	}
 	a.stopProjectCommand()
-	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL)
+	envkit := a.envKitInfo()
+	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, envkit)
 	if err != nil {
 		return models.AppState{}, err
 	}
-	if err := a.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost); err != nil {
+	if err := checkLocalOriginReachable(originServiceURL, project.LocalHost, envkit, settingsValue.InsecureSkipOriginTLS); err != nil {
+		return models.AppState{}, err
+	}
+	if err := a.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 		return models.AppState{}, err
 	}
 	return a.RefreshState()
@@ -1455,7 +1640,19 @@ func (a *App) requireAdmin() error {
 	return nil
 }
 
-func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback string) (string, error) {
+// resolveProjectOriginServiceURL picks the upstream URL cloudflared should
+// tunnel to. The lookup order is:
+//   1. The project's explicit OriginURL (highest priority).
+//   2. The user-configured DefaultServiceURL.
+//   3. When neither is set or both are still the built-in default, the
+//      EnvKit-suggested origin (https://127.0.0.1:443) if EnvKit is detected.
+//   4. Otherwise an error.
+//
+// The EnvKit fallback is intentionally conservative: we only swap in the
+// HTTPS URL when both the project and the global default are still the
+// built-in Defaultsettings value, so users who have already picked a custom
+// URL keep their current behaviour.
+func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback string, envkit localstack.Info) (string, error) {
 	if serviceURL, ok, err := normalizeServiceURL(project.OriginURL); ok {
 		if err != nil {
 			return "", fmt.Errorf("invalid project origin URL: %w", err)
@@ -1466,9 +1663,33 @@ func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback strin
 		if err != nil {
 			return "", fmt.Errorf("invalid default service URL: %w", err)
 		}
+		if envkit.Detected && localstack.IsBuiltInDefaultServiceURL(fallback) {
+			return envkit.SuggestedOriginURL, nil
+		}
 		return serviceURL, nil
 	}
+	if envkit.Detected {
+		return envkit.SuggestedOriginURL, nil
+	}
 	return "", errors.New("a valid origin service URL is required")
+}
+
+// originServerNameForLoopbackHTTPS returns the SNI value cloudflared should
+// use when dialing an HTTPS upstream that lives on the loopback address.
+// Local dev stacks (EnvKit, Herd, Laragon with HTTPS, etc.) issue certs for
+// the public-looking hostname (e.g. my-app.test) but the upstream URL points
+// at 127.0.0.1. cloudflared uses the SNI to validate the cert, so we must
+// override it with the local host name when both signals are present.
+func originServerNameForLoopbackHTTPS(serviceURL, hostHeader string) string {
+	trimmedHost := strings.TrimSpace(hostHeader)
+	if trimmedHost == "" {
+		return ""
+	}
+	lower := strings.ToLower(strings.TrimSpace(serviceURL))
+	if !strings.HasPrefix(lower, "https://127.0.0.1") && !strings.HasPrefix(lower, "https://localhost") {
+		return ""
+	}
+	return trimmedHost
 }
 
 func inferLocalHostFromProjectPath(projectPath string) string {

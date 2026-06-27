@@ -18,6 +18,7 @@ export interface AppSettings {
   tunnelName: string;
   cloudflaredPath: string;
   defaultServiceURL: string;
+  insecureSkipOriginTls: boolean;
   licenseToken?: string;
   language: string;
   theme?: 'dark' | 'light';
@@ -56,6 +57,10 @@ export interface TunnelStatus {
   detectedCloudflaredPath: string;
   configPath: string;
   usage?: TunnelUsage | null;
+  envkitDetected: boolean;
+  envkitVersion: string;
+  envkitPath: string;
+  envkitOriginUrl: string;
 }
 
 export interface TunnelUsage {

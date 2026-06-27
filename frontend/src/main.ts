@@ -455,6 +455,31 @@ function projectRows(appState: AppState): string {
     .join('');
 }
 
+// Tracks the active tab from the previous render so we can scroll to the top
+// only on actual tab switches. Without this, every render() call rewrites
+// root.innerHTML and the browser resets the scroll position, which means
+// "Save Settings" on a scrolled-down page jumps you back to the top.
+let lastRenderedTab: string | null = null;
+
+// captureMainScroll returns the current scrollTop of the .main-content
+// container, or 0 if the page is still loading or hasn't been laid out yet.
+// We use this to restore the user's scroll position across re-renders.
+function captureMainScroll(): number {
+  const scroller = root.querySelector<HTMLElement>('.main-content');
+  return scroller ? scroller.scrollTop : 0;
+}
+
+// restoreMainScroll puts the .main-content scroller back where it was
+// before render() blew away the DOM. Capped at scrollHeight - clientHeight
+// so a render that shrinks the page does not leave the scroller in an
+// out-of-range position.
+function restoreMainScroll(scrollTop: number) {
+  const scroller = root.querySelector<HTMLElement>('.main-content');
+  if (!scroller) return;
+  const max = scroller.scrollHeight - scroller.clientHeight;
+  scroller.scrollTop = Math.max(0, Math.min(scrollTop, max));
+}
+
 function render() {
   if (state.fatalError) {
     root.innerHTML = `
@@ -466,6 +491,7 @@ function render() {
         </section>
       </main>
     `;
+    lastRenderedTab = null;
     return;
   }
 
@@ -478,6 +504,7 @@ function render() {
         </section>
       </main>
     `;
+    lastRenderedTab = null;
     return;
   }
 
@@ -511,11 +538,27 @@ function render() {
     ? t('tunnelAvailable')
     : t('tunnelNotAvailable');
   const installBannerPath = appState.cloudflaredPath || 'cloudflared.exe (PATH)';
+  const envkitDetected = tunnelStatus.envkitDetected;
+  const envkitVersion = tunnelStatus.envkitVersion || 'unknown';
+  const envkitOrigin = tunnelStatus.envkitOriginUrl;
+  const envkitHint = envkitDetected
+    ? t('envkitDetected').replace('{version}', escapeHtml(envkitVersion))
+    : t('envkitNotDetected');
+  const envkitOriginHint = envkitDetected && envkitOrigin
+    ? t('envkitDefaultOrigin').replace('{origin}', escapeHtml(envkitOrigin))
+    : '';
   const headerHint = !shareToolReady
     ? ''
     : !hasProjects
       ? t('createProjectFirst')
       : '';
+
+  // Capture scroll position before we blow away the DOM. We only restore
+  // when the tab did not change — explicit tab switches should land at the
+  // top of the new tab so the user can see the page header.
+  const previousScroll = captureMainScroll();
+  const tabChanged = lastRenderedTab !== null && lastRenderedTab !== state.activeTab;
+  lastRenderedTab = state.activeTab;
 
   root.innerHTML = `
     <main class="shell">
@@ -836,6 +879,16 @@ function render() {
                           </div>
                         </div>
                       </div>
+                      <div class="metric-grid metric-grid-section">
+                        <div class="metric-card metric-card-split">
+                          <div class="metric-card-copy">
+                            <span class="summary-label">${t('envkitSectionTitle')}</span>
+                            <strong>${escapeHtml(envkitHint)} <span class="pill ${envkitDetected ? 'pill-success' : 'pill-outline'}">${envkitDetected ? t('installed') : t('notInstalled')}</span></strong>
+                            <p>${envkitDetected && tunnelStatus.envkitPath ? `${t('envkitInstallPath')}: ${escapeHtml(tunnelStatus.envkitPath)}` : ''}</p>
+                            ${envkitOriginHint ? `<p>${escapeHtml(envkitOriginHint)}</p>` : ''}
+                          </div>
+                        </div>
+                      </div>
                     </article>
 
                  <article class="panel compact-panel">
@@ -848,6 +901,13 @@ function render() {
                     <form id="settings-form" class="form-grid">
                       <label>${t('cloudflaredPath')}<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="${t('leaveBlankDefault')}" /></label>
                       <label>${t('localServiceUrl')}<input name="defaultServiceURL" value="${escapeHtml(appState.settings.defaultServiceURL)}" /></label>
+                      <label class="checkbox-row">
+                        <input type="checkbox" name="insecureSkipOriginTls" ${appState.settings.insecureSkipOriginTls ? 'checked' : ''} />
+                        <span>
+                          <strong>${t('insecureSkipOriginTls')}</strong>
+                          <small class="hint">${t('insecureSkipOriginTlsHint')}</small>
+                        </span>
+                      </label>
                       <div class="action-row wide"><button type="submit">${t('save')}</button></div>
                     </form>
                   </article>
@@ -911,10 +971,21 @@ function render() {
   `;
 
   bindForms();
+
+  if (!tabChanged) {
+    // Re-rendering on the same tab (e.g. after Save Settings, Refresh, or
+    // a tunnel-status update) should keep the user's scroll position so
+    // they don't get yanked back to the top.
+    restoreMainScroll(previousScroll);
+  }
 }
 
 function formValue(form: HTMLFormElement, name: string): string {
   return (form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null)?.value?.trim() ?? '';
+}
+
+function formChecked(form: HTMLFormElement, name: string): boolean {
+  return (form.elements.namedItem(name) as HTMLInputElement | null)?.checked ?? false;
 }
 
 function syncEditorFromForm() {
@@ -996,6 +1067,7 @@ function bindForms() {
         ...state.appState!.settings,
         cloudflaredPath: formValue(settingsForm, 'cloudflaredPath'),
         defaultServiceURL: formValue(settingsForm, 'defaultServiceURL'),
+        insecureSkipOriginTls: formChecked(settingsForm, 'insecureSkipOriginTls'),
       };
     const next = await withAction(t('save'), () => api.saveSettings(payload));
     if (next) {
