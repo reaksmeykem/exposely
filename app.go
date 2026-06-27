@@ -22,7 +22,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -32,6 +31,7 @@ import (
 	"github.com/reaksmeykem/exposely/internal/localstack"
 	"github.com/reaksmeykem/exposely/internal/models"
 	"github.com/reaksmeykem/exposely/internal/settings"
+	"github.com/reaksmeykem/exposely/internal/sysproc"
 	"github.com/reaksmeykem/exposely/internal/version"
 )
 
@@ -857,10 +857,7 @@ func (a *App) startProjectCommand(projectDir, commandText string) (<-chan string
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/C", commandText)
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
+		cmd.SysProcAttr = sysproc.Hidden()
 	} else {
 		cmd = exec.Command("sh", "-lc", commandText)
 	}
@@ -1215,12 +1212,7 @@ func (a *App) RunNpmBuild(projectID string) error {
 	}
 
 	cmd := exec.Command(command, "run", "build")
-	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
-	}
+	cmd.SysProcAttr = sysproc.Hidden()
 	cmd.Dir = project.ProjectPath
 	cmd.Env = os.Environ()
 
@@ -1873,21 +1865,11 @@ func randomSubdomain() string {
 func openExternal(target string) error {
 	if _, err := url.Parse(target); err == nil && strings.HasPrefix(strings.ToLower(target), "http") {
 		cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
-		if runtime.GOOS == "windows" {
-			cmd.SysProcAttr = &syscall.SysProcAttr{
-				HideWindow:    true,
-				CreationFlags: 0x08000000,
-			}
-		}
+		cmd.SysProcAttr = sysproc.Hidden()
 		return cmd.Start()
 	}
 	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", filepath.Clean(target))
-	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
-	}
+	cmd.SysProcAttr = sysproc.Hidden()
 	return cmd.Start()
 }
 
@@ -2017,10 +1999,7 @@ func launchExecutable(path string) error {
 		script := buildWindowsStartProcessScript(path)
 		cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
 		cmd.Dir = filepath.Dir(path)
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
+		cmd.SysProcAttr = sysproc.Hidden()
 		return cmd.Start()
 	}
 
@@ -2167,7 +2146,7 @@ func launchWindowsReplace(parentPID int, targetPath, downloadedPath string) erro
 	script := buildWindowsReplaceScript(parentPID, targetPath, downloadedPath)
 	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", script)
 	cmd.Dir = targetDir
-	cmd.SysProcAttr = windowsHiddenProcessAttrs()
+	cmd.SysProcAttr = sysproc.Hidden()
 	return cmd.Start()
 }
 
@@ -2199,16 +2178,6 @@ for ($i = 0; $i -lt 120; $i++) {
   Start-Sleep -Milliseconds 500
 }
 exit 1`, parentPID, escapedTarget, escapedDownloaded)
-}
-
-func windowsHiddenProcessAttrs() *syscall.SysProcAttr {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-	return &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: 0x08000000,
-	}
 }
 
 func nowStamp() string {

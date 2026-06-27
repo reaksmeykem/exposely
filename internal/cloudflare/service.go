@@ -16,10 +16,10 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/reaksmeykem/exposely/internal/models"
+	"github.com/reaksmeykem/exposely/internal/sysproc"
 )
 
 var quickTunnelURLPattern = regexp.MustCompile(`https://[a-z0-9-]+\.trycloudflare\.com`)
@@ -200,10 +200,7 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 	args = append(args, "run", reference)
 	cmd := exec.Command(cloudflaredPath, args...)
 	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
+		cmd.SysProcAttr = sysproc.Hidden()
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -288,10 +285,7 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 
 	cmd := exec.Command(cloudflaredPath, args...)
 	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
+		cmd.SysProcAttr = sysproc.Hidden()
 	}
 	cmd.Env = append(os.Environ(),
 		"HOME="+tempHome,
@@ -404,10 +398,7 @@ func (m *Manager) StopTunnel() error {
 
 	killCmd := exec.Command("taskkill", "/PID", fmt.Sprint(cmd.Process.Pid), "/T", "/F")
 	if runtime.GOOS == "windows" {
-		killCmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
+		killCmd.SysProcAttr = sysproc.Hidden()
 	}
 	if err := killCmd.Run(); err != nil {
 		return err
@@ -642,10 +633,7 @@ func (m *Manager) Usage() *models.TunnelUsage {
 func runCapture(executable string, args ...string) (string, string, error) {
 	cmd := exec.Command(executable, args...)
 	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000,
-		}
+		cmd.SysProcAttr = sysproc.Hidden()
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

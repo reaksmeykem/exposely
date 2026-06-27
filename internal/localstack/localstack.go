@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/reaksmeykem/exposely/internal/sysproc"
 )
 
 // EnvKitOriginURL is the upstream URL Exposely uses when EnvKit is detected
@@ -130,7 +132,7 @@ func findEnvKitInUninstallKey(root string) (string, string, bool) {
 // root by parsing `reg query root`. It returns nil on failure.
 func listRegistrySubkeys(root string) []string {
 	cmd := exec.Command("reg", "query", root)
-	cmd.SysProcAttr = hiddenProcAttr()
+	cmd.SysProcAttr = sysproc.Hidden()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -151,7 +153,7 @@ func listRegistrySubkeys(root string) []string {
 // key or value is missing or non-string.
 func readRegistryStringValue(key, name string) string {
 	cmd := exec.Command("reg", "query", key, "/v", name)
-	cmd.SysProcAttr = hiddenProcAttr()
+	cmd.SysProcAttr = sysproc.Hidden()
 	out, err := cmd.Output()
 	if err != nil {
 		return ""

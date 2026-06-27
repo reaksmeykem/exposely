@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/reaksmeykem/exposely/internal/sysproc"
 )
 
 const cliReleaseAPI = "https://api.github.com/repos/" + cliRepoOwner + "/" + cliRepoName + "/releases/latest"
@@ -140,7 +142,7 @@ func launchWindowsReplace(parentPID int, targetPath, downloadedPath string) erro
 	script := buildWindowsReplaceScript(parentPID, targetPath, downloadedPath)
 	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", script)
 	cmd.Dir = targetDir
-	cmd.SysProcAttr = windowsHiddenProcessAttrs()
+	cmd.SysProcAttr = sysproc.Hidden()
 	return cmd.Start()
 }
 
