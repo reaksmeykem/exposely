@@ -62,3 +62,46 @@ func TestResolveCLIProjectOriginServiceURLIgnoresEnvKitWhenNotDetected(t *testin
 		t.Fatalf("expected built-in default to remain, got %q", got)
 	}
 }
+
+// TestResolveCLIProjectOriginServiceURLUsesHTTPWhenStackPrefersHTTP asserts
+// that when the localstack layer decides the SuggestedOriginURL is the
+// HTTP loopback (Laragon default, or a plain Nginx / Apache install
+// serving on port 80), the CLI honours that instead of upgrading to
+// HTTPS. This is the CLI-side companion to the "normal Laravel" fix in
+// internal/localstack.
+func TestResolveCLIProjectOriginServiceURLUsesHTTPWhenStackPrefersHTTP(t *testing.T) {
+	got, err := resolveCLIProjectOriginServiceURL(
+		models.ProjectPreset{},
+		"http://127.0.0.1:80",
+		localstack.Info{
+			Detected:           true,
+			Kind:               localstack.KindLaragon,
+			Name:               "Laragon",
+			SuggestedOriginURL: localstack.LoopbackHTTPOriginURL,
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != localstack.LoopbackHTTPOriginURL {
+		t.Fatalf("expected HTTP loopback origin, got %q", got)
+	}
+}
+
+// TestCLIOriginServerNameSkippedForHTTPUpstream guards a subtle
+// interaction with the dynamic-origin fix: when the localstack layer
+// picks http://127.0.0.1:80 (Laragon / plain Nginx), cloudflared must
+// not be handed an OriginServerName override — SNI is meaningless for
+// plain HTTP and would just confuse downstream tooling.
+func TestCLIOriginServerNameSkippedForHTTPUpstream(t *testing.T) {
+	got := cliOriginServerNameForLoopbackHTTPS(localstack.LoopbackHTTPOriginURL, "my-app.test")
+	if got != "" {
+		t.Fatalf("expected empty SNI override for HTTP upstream, got %q", got)
+	}
+
+	// Sanity check the HTTPS branch still wires the host header through.
+	got = cliOriginServerNameForLoopbackHTTPS(localstack.LoopbackHTTPSOriginURL, "my-app.test")
+	if got != "my-app.test" {
+		t.Fatalf("expected SNI override for HTTPS upstream, got %q", got)
+	}
+}

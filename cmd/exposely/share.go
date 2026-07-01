@@ -156,7 +156,7 @@ func (r *cliRunner) startQuickTunnel(settingsValue models.AppSettings, project m
 	if err != nil {
 		return err
 	}
-	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, r.envKitInfo())
+	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, r.localStackInfo())
 	if err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func (r *cliRunner) shareProjectThroughNamedTunnel(settingsValue models.AppSetti
 	}
 	cfg.Tunnel = info.ID
 	cfg.CredentialsFile = info.CredentialsFile
-	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, r.envKitInfo())
+	originServiceURL, err := resolveCLIProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, r.localStackInfo())
 	if err != nil {
 		return err
 	}

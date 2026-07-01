@@ -57,10 +57,22 @@ export interface TunnelStatus {
   detectedCloudflaredPath: string;
   configPath: string;
   usage?: TunnelUsage | null;
+  // Legacy EnvKit-specific fields. Populated only when the detected
+  // stack is specifically EnvKit. New code should prefer the generic
+  // localStack* fields below.
   envkitDetected: boolean;
   envkitVersion: string;
   envkitPath: string;
   envkitOriginUrl: string;
+  // Generic local-stack fields populated by the Go side for any
+  // detected stack (EnvKit, Laravel Herd, Laravel Valet, Laragon, or a
+  // generic HTTPS listener on 127.0.0.1:443).
+  localStackDetected: boolean;
+  localStackKind: string;
+  localStackName: string;
+  localStackVersion: string;
+  localStackPath: string;
+  localStackOriginUrl: string;
 }
 
 export interface TunnelUsage {

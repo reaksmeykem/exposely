@@ -70,10 +70,24 @@ type TunnelStatus struct {
 	DetectedCloudflaredPath string       `json:"detectedCloudflaredPath"`
 	ConfigPath              string       `json:"configPath"`
 	Usage                   *TunnelUsage `json:"usage,omitempty"`
-	EnvKitDetected          bool         `json:"envkitDetected"`
-	EnvKitVersion           string       `json:"envkitVersion"`
-	EnvKitPath              string       `json:"envkitPath"`
-	EnvKitOriginURL         string       `json:"envkitOriginUrl"`
+	// Legacy EnvKit-specific status fields. Populated only when the
+	// detected local stack is specifically EnvKit so existing UI keeps
+	// rendering the same way. New code should read the LocalStack*
+	// fields below for stack-agnostic behaviour.
+	EnvKitDetected  bool   `json:"envkitDetected"`
+	EnvKitVersion   string `json:"envkitVersion"`
+	EnvKitPath      string `json:"envkitPath"`
+	EnvKitOriginURL string `json:"envkitOriginUrl"`
+	// LocalStack* fields describe whichever local dev stack Exposely
+	// auto-detected on the host (EnvKit, Laravel Herd, Laravel Valet,
+	// Laragon, or a generic HTTPS listener on 127.0.0.1:443). They are
+	// populated whenever a stack was found, regardless of which one.
+	LocalStackDetected  bool   `json:"localStackDetected"`
+	LocalStackKind      string `json:"localStackKind"`
+	LocalStackName      string `json:"localStackName"`
+	LocalStackVersion   string `json:"localStackVersion"`
+	LocalStackPath      string `json:"localStackPath"`
+	LocalStackOriginURL string `json:"localStackOriginUrl"`
 }
 
 // TunnelUsage captures live usage counters exposed by the local cloudflared

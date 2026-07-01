@@ -405,6 +405,72 @@ func TestClassifyUpstreamErrorGenericFallback(t *testing.T) {
 	}
 }
 
+// TestClassifyUpstreamErrorConnectionRefusedHTTPLoopbackHint asserts that the
+// "start your local web server" hint is also produced for stacks whose
+// upstream is the HTTP loopback URL (http://127.0.0.1:80), not just the
+// HTTPS one. This is the fix that makes "normal Laravel" behind plain
+// Nginx / Apache / Laragon give the same helpful guidance as EnvKit.
+func TestClassifyUpstreamErrorConnectionRefusedHTTPLoopbackHint(t *testing.T) {
+	classified := classifyUpstreamError(
+		localstack.LoopbackHTTPOriginURL,
+		"my-app.test",
+		localstack.Info{Detected: true, Kind: localstack.KindLaragon, Name: "Laragon"},
+		fmt.Errorf("dial tcp 127.0.0.1:80: connectex: No connection could be made because the target machine actively refused it."),
+	)
+	msg := classified.Error()
+	if !strings.Contains(msg, "Laragon") {
+		t.Fatalf("expected Laragon-specific hint for HTTP:80 connection refused, got %q", msg)
+	}
+	if !strings.Contains(msg, "Start All") {
+		t.Fatalf("expected Laragon actionable hint, got %q", msg)
+	}
+}
+
+// TestClassifyUpstreamErrorConnectionRefusedGenericHTTPLoopbackHint covers
+// the "no installer detected, but HTTP:80 is our suggested origin" case
+// — a plain Nginx / Apache user should still get a "start your local
+// web server" hint rather than a bare "not reachable" message.
+func TestClassifyUpstreamErrorConnectionRefusedGenericHTTPLoopbackHint(t *testing.T) {
+	classified := classifyUpstreamError(
+		localstack.LoopbackHTTPOriginURL,
+		"my-app.test",
+		localstack.Info{Detected: true, Kind: localstack.KindHTTPLoopback, Name: "HTTP service on 127.0.0.1:80"},
+		fmt.Errorf("dial tcp 127.0.0.1:80: connect: connection refused"),
+	)
+	msg := classified.Error()
+	if !strings.Contains(msg, "HTTP service on 127.0.0.1:80") {
+		t.Fatalf("expected generic HTTP-loopback stack name in hint, got %q", msg)
+	}
+	if !strings.Contains(msg, "Start your local web server") {
+		t.Fatalf("expected generic start-web-server hint, got %q", msg)
+	}
+}
+
+// TestIsLocalLoopbackOriginRecognisesBothSchemes guards the isLocalLoopbackOrigin
+// helper that gates the stack-aware error hint. It must accept both the
+// HTTPS and HTTP canonical loopback URLs so the hint fires for every
+// supported local stack (not just HTTPS-terminating ones).
+func TestIsLocalLoopbackOriginRecognisesBothSchemes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{localstack.LoopbackHTTPSOriginURL, true},
+		{localstack.LoopbackHTTPOriginURL, true},
+		{"  https://127.0.0.1:443  ", true},
+		{"HTTP://127.0.0.1:80", true},
+		{"http://127.0.0.1:8080", false},
+		{"https://127.0.0.1:8443", false},
+		{"http://localhost:80", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isLocalLoopbackOrigin(tc.in); got != tc.want {
+			t.Fatalf("isLocalLoopbackOrigin(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestIsConnectionRefused(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -481,5 +547,89 @@ func TestProjectPublicURLSkipsEphemeralModes(t *testing.T) {
 		if got != "" {
 			t.Fatalf("expected empty URL for mode %q, got %q", mode, got)
 		}
+	}
+}
+
+
+func TestResolveProjectOriginServiceURLSwapsForHerd(t *testing.T) {
+	// The whole point of the dynamic-detection fix: Herd users with the
+	// built-in default service URL must get the swap to
+	// https://127.0.0.1:443, not just EnvKit users.
+	serviceURL, err := resolveProjectOriginServiceURL(
+		models.ProjectPreset{},
+		"http://127.0.0.1:80",
+		localstack.Info{
+			Detected:           true,
+			Kind:               localstack.KindHerd,
+			Name:               "Laravel Herd",
+			SuggestedOriginURL: localstack.LocalHTTPSOriginURL,
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if serviceURL != localstack.LocalHTTPSOriginURL {
+		t.Fatalf("expected Herd to swap to %q, got %q", localstack.LocalHTTPSOriginURL, serviceURL)
+	}
+}
+
+func TestResolveProjectOriginServiceURLSwapsForGenericHTTPSLoopback(t *testing.T) {
+	// Even when we cannot identify the specific stack, a generic HTTPS
+	// listener on 127.0.0.1:443 should still trigger the swap.
+	serviceURL, err := resolveProjectOriginServiceURL(
+		models.ProjectPreset{},
+		"http://127.0.0.1:80",
+		localstack.Info{
+			Detected:           true,
+			Kind:               localstack.KindHTTPSLoopback,
+			Name:               "HTTPS service on 127.0.0.1:443",
+			SuggestedOriginURL: localstack.LocalHTTPSOriginURL,
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if serviceURL != localstack.LocalHTTPSOriginURL {
+		t.Fatalf("expected generic HTTPS-loopback to swap to %q, got %q", localstack.LocalHTTPSOriginURL, serviceURL)
+	}
+}
+
+func TestClassifyUpstreamErrorHerdHint(t *testing.T) {
+	// Herd users hit "connection refused" when Herd's services are
+	// stopped. The hint should mention Herd (not EnvKit) so the user
+	// knows where to look.
+	classified := classifyUpstreamError(
+		"https://127.0.0.1:443",
+		"my-app.test",
+		localstack.Info{Detected: true, Kind: localstack.KindHerd, Name: "Laravel Herd"},
+		fmt.Errorf("dial tcp 127.0.0.1:443: connect: connection refused"),
+	)
+	msg := classified.Error()
+	if !strings.Contains(msg, "Laravel Herd") {
+		t.Fatalf("expected Herd-specific hint, got %q", msg)
+	}
+	if strings.Contains(msg, "EnvKit") {
+		t.Fatalf("Herd hint should not mention EnvKit, got %q", msg)
+	}
+}
+
+func TestClassifyUpstreamErrorGenericLoopbackHint(t *testing.T) {
+	// When only the generic HTTPS-loopback probe matched, the hint
+	// should be stack-agnostic — never name-drop EnvKit/Herd/etc.
+	classified := classifyUpstreamError(
+		"https://127.0.0.1:443",
+		"my-app.test",
+		localstack.Info{Detected: true, Kind: localstack.KindHTTPSLoopback, Name: "HTTPS service on 127.0.0.1:443"},
+		fmt.Errorf("dial tcp 127.0.0.1:443: connect: connection refused"),
+	)
+	msg := classified.Error()
+	if strings.Contains(msg, "EnvKit") {
+		t.Fatalf("generic-loopback hint should not mention EnvKit, got %q", msg)
+	}
+	if strings.Contains(msg, "Laravel Herd") {
+		t.Fatalf("generic-loopback hint should not mention Herd, got %q", msg)
+	}
+	if !strings.Contains(msg, "Start your local web server") {
+		t.Fatalf("expected generic 'start your local web server' guidance, got %q", msg)
 	}
 }

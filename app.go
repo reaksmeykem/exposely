@@ -52,10 +52,10 @@ type App struct {
 	projectMu   sync.Mutex
 	projectCmd  *exec.Cmd
 	lastStateMu sync.Mutex
-	updateMu    sync.RWMutex
-	updateInfo  models.UpdateInfo
-	envkitMu    sync.RWMutex
-	envkit      localstack.Info
+	updateMu      sync.RWMutex
+	updateInfo    models.UpdateInfo
+	localStackMu  sync.RWMutex
+	localStack    localstack.Info
 }
 
 func NewApp() (*App, error) {
@@ -79,26 +79,27 @@ func NewApp() (*App, error) {
 		deviceID:   resolveDeviceID(),
 	}
 	app.manager = cloudflare.NewManager(app.configPath, app.pushLog, app.pushStatus)
-	app.envkit = localstack.DetectEnvKit()
+	app.localStack = localstack.Detect()
 	return app, nil
 }
 
-// refreshEnvKit re-runs the EnvKit detector and stores the result on the app.
-// Callers use this from share flows when they want the latest detection in
-// case EnvKit was installed after the app started.
-func (a *App) refreshEnvKit() localstack.Info {
-	info := localstack.DetectEnvKit()
-	a.envkitMu.Lock()
-	a.envkit = info
-	a.envkitMu.Unlock()
+// refreshLocalStack re-runs the local-stack detector and stores the
+// result on the app. Callers use this from share flows so newly-installed
+// stacks (EnvKit / Herd / Valet / Laragon / generic HTTPS:443 listener)
+// are picked up without restarting Exposely.
+func (a *App) refreshLocalStack() localstack.Info {
+	info := localstack.Detect()
+	a.localStackMu.Lock()
+	a.localStack = info
+	a.localStackMu.Unlock()
 	return info
 }
 
-// envKitInfo returns the latest cached EnvKit detection snapshot.
-func (a *App) envKitInfo() localstack.Info {
-	a.envkitMu.RLock()
-	defer a.envkitMu.RUnlock()
-	return a.envkit
+// localStackInfo returns the latest cached local-stack detection snapshot.
+func (a *App) localStackInfo() localstack.Info {
+	a.localStackMu.RLock()
+	defer a.localStackMu.RUnlock()
+	return a.localStack
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -141,13 +142,24 @@ func (a *App) RefreshState() (models.AppState, error) {
 		status.DetectedCloudflaredPath = detectedPath
 	}
 
-	// Refresh EnvKit detection so the UI sees installs that happened after
-	// Exposely was launched (and stays accurate across long sessions).
-	envkit := a.refreshEnvKit()
-	status.EnvKitDetected = envkit.Detected
-	status.EnvKitVersion = envkit.Version
-	status.EnvKitPath = envkit.InstallPath
-	status.EnvKitOriginURL = envkit.SuggestedOriginURL
+	// Refresh local-stack detection so the UI sees installs (or live
+	// HTTPS listeners) that appeared after Exposely was launched.
+	stack := a.refreshLocalStack()
+	// Legacy EnvKit-specific fields: only populated when the detected
+	// stack is specifically EnvKit, preserving existing behaviour.
+	if stack.IsEnvKit() {
+		status.EnvKitDetected = true
+		status.EnvKitVersion = stack.Version
+		status.EnvKitPath = stack.InstallPath
+		status.EnvKitOriginURL = stack.SuggestedOriginURL
+	}
+	// New generic local-stack fields: populated for any detected stack.
+	status.LocalStackDetected = stack.Detected
+	status.LocalStackKind = string(stack.Kind)
+	status.LocalStackName = stack.Name
+	status.LocalStackVersion = stack.Version
+	status.LocalStackPath = stack.InstallPath
+	status.LocalStackOriginURL = stack.SuggestedOriginURL
 	if cfgErr == nil {
 		status.ActiveHostnames = cloudflare.HostnamesFromConfig(cfg)
 		status.TunnelID = cfg.Tunnel
@@ -573,17 +585,19 @@ func checkLocalHTTPService(serviceURL string) error {
 // Without this pre-flight the user gets a tunnel URL that 502s because the
 // upstream web server is offline. The hostHeader is used as the TLS SNI
 // when the upstream is HTTPS on the loopback address (EnvKit / Herd /
-// Laragon HTTPS-style setups), so the cert for *.test validates.
+// Valet / Laragon / generic 127.0.0.1:443 setups), so the cert for *.test
+// validates.
 //
-// When envkit.Detected is true and the upstream is unreachable the error
-// message is annotated with a hint to start EnvKit's nginx, which is by
-// far the most common cause.
+// When stack.Detected is true and the upstream is unreachable the error
+// message is annotated with a stack-aware hint (e.g. "start EnvKit's
+// nginx", "start Herd", or a generic "make sure your local web server is
+// running" for unidentified loopback HTTPS).
 //
 // When insecureSkipOriginTLS is true the pre-flight dials without
 // validating the cert — this matches the flag that will be passed to
 // cloudflared via --no-tls-verify, so we don't reject a share we are
 // about to allow anyway.
-func checkLocalOriginReachable(serviceURL, hostHeader string, envkit localstack.Info, insecureSkipOriginTLS bool) error {
+func checkLocalOriginReachable(serviceURL, hostHeader string, stack localstack.Info, insecureSkipOriginTLS bool) error {
 	parsed, err := url.Parse(serviceURL)
 	if err != nil {
 		return fmt.Errorf("invalid origin URL %q: %w", serviceURL, err)
@@ -600,8 +614,8 @@ func checkLocalOriginReachable(serviceURL, hostHeader string, envkit localstack.
 			TLSClientConfig: &tls.Config{
 				ServerName:         sni,
 				InsecureSkipVerify: insecureSkipOriginTLS,
-				// Keep the system trust store so EnvKit's local CA still
-				// works — we only override SNI here, not verification.
+				// Keep the system trust store so the local stack's CA
+				// still works — we only override SNI here, not verification.
 			},
 		}
 	}
@@ -617,7 +631,7 @@ func checkLocalOriginReachable(serviceURL, hostHeader string, envkit localstack.
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return classifyUpstreamError(serviceURL, hostHeader, envkit, err)
+		return classifyUpstreamError(serviceURL, hostHeader, stack, err)
 	}
 	defer resp.Body.Close()
 
@@ -630,16 +644,21 @@ func checkLocalOriginReachable(serviceURL, hostHeader string, envkit localstack.
 // classifyUpstreamError turns a raw dial/HTTP error from checkLocalOriginReachable
 // into actionable guidance for the user. We distinguish three failure modes:
 //
-//   - "no listener" — the upstream port is closed (EnvKit's nginx is off).
-//   - "cert SAN mismatch" — the upstream is answering but its cert does not
-//     cover the host the project is asking for (very common with EnvKit when
-//     a .test site is not registered).
+//   - "no listener" — the upstream port is closed (the local web server
+//     is off).
+//   - "cert SAN mismatch" — the upstream is answering but its cert does
+//     not cover the host the project is asking for (very common with
+//     local stacks when a .test site is not registered).
 //   - "other TLS error" — anything else in the TLS handshake.
 //
 // We inspect the underlying error string because Go's x509 package produces
 // stable, parseable messages of the form:
 // `x509: certificate is valid for A, B, C, not <requested>`.
-func classifyUpstreamError(serviceURL, hostHeader string, envkit localstack.Info, rawErr error) error {
+//
+// stack is consulted only to make the hint text more specific (e.g. "start
+// EnvKit's nginx" vs "start Herd" vs a generic "start your local web
+// server"). It does not change the error classification itself.
+func classifyUpstreamError(serviceURL, hostHeader string, stack localstack.Info, rawErr error) error {
 	msg := rawErr.Error()
 
 	// Cert SAN mismatch: extract the valid hosts from the standard x509 wording.
@@ -649,30 +668,85 @@ func classifyUpstreamError(serviceURL, hostHeader string, envkit localstack.Info
 		if requested == "" {
 			requested = "(unknown host)"
 		}
-		if envkit.Detected && isEnvKitOrigin(serviceURL) {
+		if stack.Detected && isLocalHTTPSOrigin(serviceURL) {
+			label := stackHintLabel(stack)
 			return fmt.Errorf(
-				"EnvKit's certificate at %s does not cover %q. Hosts covered by the cert: %s. "+
-					"Open EnvKit and register %s as a site (or, in Exposely, set a custom OriginURL on the project that points at a server whose cert covers %s): %w",
-				serviceURL, requested, validPart, requested, requested, rawErr,
+				"%s's certificate at %s does not cover %q. Hosts covered by the cert: %s. "+
+					"Please register %s with %s (or, in Exposely, set a custom OriginURL on the project that points at a server whose cert covers %s): %w",
+				label, serviceURL, requested, validPart, requested, label, requested, rawErr,
 			)
 		}
 		return fmt.Errorf(
 			"the certificate at %s does not cover %q. Hosts covered by the cert: %s. "+
-				"Register %s with the upstream server or set a custom OriginURL on the project: %w",
+				"Please register %s with the upstream server or set a custom OriginURL on the project: %w",
 			serviceURL, requested, validPart, requested, rawErr,
 		)
 	}
 
 	// "no listener" path — the upstream port is closed.
 	if isConnectionRefused(msg) || isNoRoute(msg) {
-		if envkit.Detected && isEnvKitOrigin(serviceURL) {
-			return fmt.Errorf("EnvKit's nginx does not appear to be running on %s. Open EnvKit and start nginx (or another web server) before sharing: %w", serviceURL, rawErr)
+		// The "start your local web server" hint applies to any known
+		// local stack whose upstream is our auto-suggested loopback
+		// URL, whether that is HTTPS on 443 (EnvKit / Herd / Valet /
+		// generic HTTPS listener) or HTTP on 80 (Laragon / plain
+		// Nginx / Apache / generic HTTP listener). Restricting it to
+		// HTTPS only would give a worse error message to "normal
+		// Laravel" users behind HTTP-only stacks.
+		if stack.Detected && isLocalLoopbackOrigin(serviceURL) {
+			label := stackHintLabel(stack)
+			action := stackHintAction(stack)
+			return fmt.Errorf("%s does not appear to be running on %s. %s before sharing: %w", label, serviceURL, action, rawErr)
 		}
 		return fmt.Errorf("upstream %s is not reachable: %w", serviceURL, rawErr)
 	}
 
 	// Fallback: any other transport / TLS / DNS error.
 	return fmt.Errorf("upstream %s is not reachable: %w", serviceURL, rawErr)
+}
+
+// stackHintLabel returns a human-readable name for the detected stack so
+// error messages can say "EnvKit", "Laravel Herd", … instead of a generic
+// phrase. Falls back to "EnvKit" when Kind is empty for back-compat with
+// callers that build a bare Info{Detected:true} (existing tests do this).
+func stackHintLabel(stack localstack.Info) string {
+	if strings.TrimSpace(stack.Name) != "" {
+		return stack.Name
+	}
+	switch stack.Kind {
+	case localstack.KindHerd:
+		return "Laravel Herd"
+	case localstack.KindValet:
+		return "Laravel Valet"
+	case localstack.KindLaragon:
+		return "Laragon"
+	case localstack.KindHTTPSLoopback:
+		return "Your local HTTPS service"
+	case localstack.KindHTTPLoopback:
+		return "Your local web server"
+	case localstack.KindEnvKit, localstack.KindNone:
+		fallthrough
+	default:
+		return "EnvKit"
+	}
+}
+
+// stackHintAction returns a "do this to fix it" sentence tailored to the
+// detected stack.
+func stackHintAction(stack localstack.Info) string {
+	switch stack.Kind {
+	case localstack.KindHerd:
+		return "Open Laravel Herd and make sure the services are running"
+	case localstack.KindValet:
+		return "Run `valet start` (and `valet park`/`valet link` for your site)"
+	case localstack.KindLaragon:
+		return "Open Laragon and click Start All"
+	case localstack.KindHTTPSLoopback, localstack.KindHTTPLoopback:
+		return "Start your local web server"
+	case localstack.KindEnvKit, localstack.KindNone:
+		fallthrough
+	default:
+		return "Open EnvKit and start nginx (or another web server)"
+	}
 }
 
 // extractValidHosts pulls the comma-separated SAN list out of a Go x509
@@ -706,11 +780,31 @@ func isNoRoute(message string) bool {
 	return strings.Contains(strings.ToLower(message), "no route to host")
 }
 
-// isEnvKitOrigin returns true when the supplied URL matches the default
-// EnvKit upstream (https://127.0.0.1:443). Used to decide whether to print
-// the EnvKit-specific hint in error messages.
+// isLocalLoopbackOrigin returns true when the supplied URL matches either
+// of the canonical local-stack loopback upstreams (https://127.0.0.1:443
+// for TLS-terminating stacks like EnvKit / Herd / Valet, or
+// http://127.0.0.1:80 for HTTP-only stacks like Laragon / plain Nginx /
+// Apache). Used to decide whether to print stack-specific hints in error
+// messages.
+func isLocalLoopbackOrigin(serviceURL string) bool {
+	trimmed := strings.TrimSpace(serviceURL)
+	return strings.EqualFold(trimmed, localstack.LoopbackHTTPSOriginURL) ||
+		strings.EqualFold(trimmed, localstack.LoopbackHTTPOriginURL)
+}
+
+// isLocalHTTPSOrigin is the historical name for the HTTPS-only variant of
+// isLocalLoopbackOrigin. It is kept because a handful of tests / callers
+// specifically care about the HTTPS case (e.g. to decide whether an
+// upstream server-name override is needed). New code branching on "is
+// this our auto-suggested loopback URL?" should use isLocalLoopbackOrigin.
+func isLocalHTTPSOrigin(serviceURL string) bool {
+	return strings.EqualFold(strings.TrimSpace(serviceURL), localstack.LoopbackHTTPSOriginURL)
+}
+
+// isEnvKitOrigin is the legacy name for isLocalHTTPSOrigin, kept to avoid
+// breaking existing tests/callers.
 func isEnvKitOrigin(serviceURL string) bool {
-	return strings.EqualFold(strings.TrimSpace(serviceURL), localstack.EnvKitOriginURL)
+	return isLocalHTTPSOrigin(serviceURL)
 }
 
 func (a *App) resolveProjectDirectory(projectPath string) (string, error) {
@@ -1333,7 +1427,7 @@ func (a *App) TestProject(projectID string) (string, error) {
 		return "", err
 	}
 
-	serviceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, a.envKitInfo())
+	serviceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, a.localStackInfo())
 	if err != nil {
 		return "", err
 	}
@@ -1397,11 +1491,11 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 	}
 	cfg.Tunnel = info.ID
 	cfg.CredentialsFile = info.CredentialsFile
-	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, a.envKitInfo())
+	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, a.localStackInfo())
 	if err != nil {
 		return models.AppState{}, err
 	}
-	if err := checkLocalOriginReachable(originServiceURL, project.LocalHost, a.envKitInfo(), settingsValue.InsecureSkipOriginTLS); err != nil {
+	if err := checkLocalOriginReachable(originServiceURL, project.LocalHost, a.localStackInfo(), settingsValue.InsecureSkipOriginTLS); err != nil {
 		return models.AppState{}, err
 	}
 	cloudflare.UpsertIngressRule(&cfg, cloudflare.IngressRule{
@@ -1453,12 +1547,12 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 		_ = a.manager.StopTunnel()
 	}
 	a.stopProjectCommand()
-	envkit := a.envKitInfo()
-	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, envkit)
+	stack := a.localStackInfo()
+	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, stack)
 	if err != nil {
 		return models.AppState{}, err
 	}
-	if err := checkLocalOriginReachable(originServiceURL, project.LocalHost, envkit, settingsValue.InsecureSkipOriginTLS); err != nil {
+	if err := checkLocalOriginReachable(originServiceURL, project.LocalHost, stack, settingsValue.InsecureSkipOriginTLS); err != nil {
 		return models.AppState{}, err
 	}
 	if err := a.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
@@ -1634,17 +1728,21 @@ func (a *App) requireAdmin() error {
 
 // resolveProjectOriginServiceURL picks the upstream URL cloudflared should
 // tunnel to. The lookup order is:
-//   1. The project's explicit OriginURL (highest priority).
-//   2. The user-configured DefaultServiceURL.
-//   3. When neither is set or both are still the built-in default, the
-//      EnvKit-suggested origin (https://127.0.0.1:443) if EnvKit is detected.
-//   4. Otherwise an error.
+//  1. The project's explicit OriginURL (highest priority).
+//  2. The user-configured DefaultServiceURL.
+//  3. When neither is set or both are still the built-in default, the
+//     local-stack-suggested origin (dynamically chosen by the localstack
+//     package — https://127.0.0.1:443 for HTTPS-terminating stacks like
+//     EnvKit / Herd / Valet, http://127.0.0.1:80 for HTTP-only stacks
+//     like Laragon and plain Nginx / Apache) if any supported stack is
+//     detected.
+//  4. Otherwise an error.
 //
-// The EnvKit fallback is intentionally conservative: we only swap in the
-// HTTPS URL when both the project and the global default are still the
-// built-in Defaultsettings value, so users who have already picked a custom
-// URL keep their current behaviour.
-func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback string, envkit localstack.Info) (string, error) {
+// The local-stack fallback is intentionally conservative: we only swap in
+// the suggested URL when both the project and the global default are still
+// the built-in DefaultSettings value, so users who have already picked a
+// custom URL keep their current behaviour.
+func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback string, stack localstack.Info) (string, error) {
 	if serviceURL, ok, err := normalizeServiceURL(project.OriginURL); ok {
 		if err != nil {
 			return "", fmt.Errorf("invalid project origin URL: %w", err)
@@ -1655,13 +1753,13 @@ func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback strin
 		if err != nil {
 			return "", fmt.Errorf("invalid default service URL: %w", err)
 		}
-		if envkit.Detected && localstack.IsBuiltInDefaultServiceURL(fallback) {
-			return envkit.SuggestedOriginURL, nil
+		if stack.Detected && localstack.IsBuiltInDefaultServiceURL(fallback) {
+			return stack.SuggestedOriginURL, nil
 		}
 		return serviceURL, nil
 	}
-	if envkit.Detected {
-		return envkit.SuggestedOriginURL, nil
+	if stack.Detected {
+		return stack.SuggestedOriginURL, nil
 	}
 	return "", errors.New("a valid origin service URL is required")
 }

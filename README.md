@@ -81,17 +81,49 @@ Use this when your project is:
 
 This also works well for built Tailwind sites and other frontend output folders that contain a real `index.html`.
 
-### EnvKit (auto-detected)
+### EnvKit / Herd / Valet / Laragon / plain Nginx or Apache (auto-detected)
 
-If [EnvKit](https://envkit.net) is installed on the machine, Exposely detects it on launch (Windows: registry `Uninstall` entries; macOS: `/Applications/EnvKit.app`) and surfaces the install in the **Local dev stack** card under **Settings → Setup**.
+Exposely auto-detects any supported local dev stack on launch and uses it as
+the default upstream when you have not overridden `DefaultServiceURL` or the
+project's `OriginURL`. Detection covers:
 
-When EnvKit is detected and you have not changed the default service URL, Exposely switches the cloudflared upstream to `https://127.0.0.1:443` so your trusted-HTTPS `.test` site is tunneled instead of the bare HTTP loopback. The behaviour is opt-out: as soon as you set a custom `DefaultServiceURL` (or a per-project `OriginURL`), Exposely leaves it alone.
+- **EnvKit** ([envkit.net](https://envkit.net)) — Windows registry `Uninstall`
+  entries; macOS `/Applications/EnvKit.app`.
+- **Laravel Herd** — Windows registry / `%LOCALAPPDATA%\Programs\Herd`; macOS
+  `/Applications/Herd.app`.
+- **Laravel Valet** (macOS) — Composer / Homebrew install of `valet`.
+- **Laragon** (Windows) — registry entry or `C:\laragon\laragon.exe`.
+- **Any local HTTPS listener** on `127.0.0.1:443` (Caddy, Nginx w/ SSL, …).
+- **Any local HTTP listener** on `127.0.0.1:80` (plain Nginx, Apache, IIS,
+  `.test` vhosts served over HTTP — this is what makes "normal Laravel"
+  installs work out of the box).
 
-What gets detected:
+Exposely picks the upstream URL **dynamically** per host: it probes both
+`127.0.0.1:443` and `127.0.0.1:80` in parallel and swaps the origin to whichever
+one is actually running, preferring the stack's own default protocol:
 
-- Windows: `DisplayName` starting with `EnvKit` in the standard Uninstall registry keys (HKLM, WOW6432Node, HKCU), with `InstallLocation` and `DisplayVersion` surfaced in the UI. Falls back to known install paths if the registry entry is missing.
-- macOS: `/Applications/EnvKit.app` (or `~/Applications/EnvKit.app`) plus the `~/Library/Application Support/EnvKit` data directory.
-- Version comes from `DisplayVersion` on Windows and `CFBundleShortVersionString` on macOS.
+- EnvKit, Herd, Valet, generic HTTPS listener → `https://127.0.0.1:443`
+- Laragon, plain Nginx / Apache, generic HTTP listener → `http://127.0.0.1:80`
+
+The swap only applies when both the project's `OriginURL` and the global
+`DefaultServiceURL` are still the built-in default — as soon as you set a
+custom URL Exposely leaves it alone.
+
+What gets detected on Windows:
+
+- `DisplayName` starting with `EnvKit`, `Herd` / `Laravel Herd`, or `Laragon`
+  in the standard Uninstall registry keys (HKLM, WOW6432Node, HKCU), with
+  `InstallLocation` and `DisplayVersion` surfaced in the UI. Falls back to
+  known install paths if the registry entry is missing.
+
+What gets detected on macOS:
+
+- `/Applications/EnvKit.app` (or `~/Applications/EnvKit.app`) plus the
+  `~/Library/Application Support/EnvKit` data directory.
+- `/Applications/Herd.app` / `~/Applications/Herd.app`.
+- `valet` binary at the standard Composer / Homebrew locations.
+- Version comes from `DisplayVersion` on Windows and
+  `CFBundleShortVersionString` on macOS.
 
 You can verify detection from the CLI with:
 
@@ -99,7 +131,8 @@ You can verify detection from the CLI with:
 exposely status
 ```
 
-When EnvKit is present you will see an `EnvKit:` line that lists the version, install path, and the swapped origin URL.
+When a stack is detected you will see a `Local stack:` line that lists the
+stack name, version, install path, and the swapped origin URL.
 
 #### Skip upstream TLS verification (opt-in)
 

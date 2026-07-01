@@ -538,14 +538,36 @@ function render() {
     ? t('tunnelAvailable')
     : t('tunnelNotAvailable');
   const installBannerPath = appState.cloudflaredPath || 'cloudflared.exe (PATH)';
-  const envkitDetected = tunnelStatus.envkitDetected;
-  const envkitVersion = tunnelStatus.envkitVersion || 'unknown';
-  const envkitOrigin = tunnelStatus.envkitOriginUrl;
-  const envkitHint = envkitDetected
-    ? t('envkitDetected').replace('{version}', escapeHtml(envkitVersion))
-    : t('envkitNotDetected');
-  const envkitOriginHint = envkitDetected && envkitOrigin
-    ? t('envkitDefaultOrigin').replace('{origin}', escapeHtml(envkitOrigin))
+  // Prefer the new generic localStack* fields; fall back to the legacy
+  // envkit* fields when the backend has not been refreshed yet so we
+  // keep rendering correctly across version transitions. The name
+  // fallback is intentionally staged so Exposely never shows the wrong
+  // stack name:
+  //   1. Use the backend's localStackName when set (covers EnvKit, Herd,
+  //      Valet, Laragon, and the generic HTTP/HTTPS loopback kinds).
+  //   2. Otherwise, if legacy EnvKit-only fields are populated the
+  //      detected stack really was EnvKit — show "EnvKit".
+  //   3. Otherwise fall back to a neutral label ("Local dev stack") so
+  //      we don't misrepresent an unidentified stack as EnvKit.
+  const localStackDetected = tunnelStatus.localStackDetected ?? tunnelStatus.envkitDetected;
+  const rawStackName = (tunnelStatus.localStackName ?? '').trim();
+  const looksLikeLegacyEnvKitPayload = !!(tunnelStatus.envkitDetected || tunnelStatus.envkitVersion || tunnelStatus.envkitPath);
+  const localStackName = rawStackName
+    || (looksLikeLegacyEnvKitPayload ? 'EnvKit' : t('localStackFallbackName'));
+  const localStackVersion = tunnelStatus.localStackVersion || tunnelStatus.envkitVersion || '';
+  const localStackPath = tunnelStatus.localStackPath || tunnelStatus.envkitPath;
+  const localStackOrigin = tunnelStatus.localStackOriginUrl || tunnelStatus.envkitOriginUrl;
+  const envkitHint = localStackDetected
+    ? localStackVersion
+      ? t('localStackDetected')
+          .replace('{name}', escapeHtml(localStackName))
+          .replace('{version}', escapeHtml(localStackVersion))
+      : t('localStackDetectedNoVersion').replace('{name}', escapeHtml(localStackName))
+    : t('localStackNotDetected');
+  const envkitOriginHint = localStackDetected && localStackOrigin
+    ? t('localStackDefaultOrigin')
+        .replace('{name}', escapeHtml(localStackName))
+        .replace('{origin}', escapeHtml(localStackOrigin))
     : '';
   const headerHint = !shareToolReady
     ? ''
@@ -883,8 +905,8 @@ function render() {
                         <div class="metric-card metric-card-split">
                           <div class="metric-card-copy">
                             <span class="summary-label">${t('envkitSectionTitle')}</span>
-                            <strong>${escapeHtml(envkitHint)} <span class="pill ${envkitDetected ? 'pill-success' : 'pill-outline'}">${envkitDetected ? t('installed') : t('notInstalled')}</span></strong>
-                            <p>${envkitDetected && tunnelStatus.envkitPath ? `${t('envkitInstallPath')}: ${escapeHtml(tunnelStatus.envkitPath)}` : ''}</p>
+                            <strong>${escapeHtml(envkitHint)} <span class="pill ${localStackDetected ? 'pill-success' : 'pill-outline'}">${localStackDetected ? t('installed') : t('notInstalled')}</span></strong>
+                            <p>${localStackDetected && localStackPath ? `${t('localStackInstallPath')}: ${escapeHtml(localStackPath)}` : ''}</p>
                             ${envkitOriginHint ? `<p>${escapeHtml(envkitOriginHint)}</p>` : ''}
                           </div>
                         </div>
