@@ -475,6 +475,25 @@ func (a *App) startAutoTunnel(project models.ProjectPreset) (models.AppState, er
 	if err != nil {
 		return models.AppState{}, err
 	}
+	// Before assuming the user wants a stack-based *.test setup, sniff
+	// the loopback for a live dev server. This is the escape hatch for
+	// "normal Laravel" (php artisan serve on :8000), Vite, React,
+	// Angular, and anyone else who ran their dev server first and then
+	// hit `exposely share` without configuring a Local URL. If we find
+	// one, we tunnel it directly — same behaviour as if the user had
+	// explicitly set project.LocalURL.
+	if serviceURL, ok := probeRunningDevServer(preferredDevServerPorts(projectDir)); ok {
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "auto",
+			Level:     "success",
+			Message:   fmt.Sprintf("Detected running local dev server at %s — tunneling that instead of the auto-inferred .test host", serviceURL),
+		})
+		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
+			return models.AppState{}, err
+		}
+		return a.RefreshState()
+	}
 	if looksLikeLaravelProjectDir(projectDir) {
 		laravelProject := project
 		laravelProject.LocalHost = inferLocalHostFromProjectPath(projectDir)
@@ -695,7 +714,19 @@ func classifyUpstreamError(serviceURL, hostHeader string, stack localstack.Info,
 		if stack.Detected && isLocalLoopbackOrigin(serviceURL) {
 			label := stackHintLabel(stack)
 			action := stackHintAction(stack)
-			return fmt.Errorf("%s does not appear to be running on %s. %s before sharing: %w", label, serviceURL, action, rawErr)
+			// The upstream is our auto-swapped stack URL and it is
+			// dead. Two common recoveries: start the stack, OR bypass
+			// the stack entirely by pointing Exposely at the actual
+			// running dev server (php artisan serve on :8000, Vite on
+			// :5173, …). Surfacing both keeps the guidance useful for
+			// users who are not running the detected stack right now.
+			return fmt.Errorf(
+				"%s does not appear to be running on %s. %s, "+
+					"or point Exposely at your running dev server instead "+
+					"(e.g. `exposely share --url http://127.0.0.1:8000` for "+
+					"`php artisan serve`, or set a Local URL on the project): %w",
+				label, serviceURL, action, rawErr,
+			)
 		}
 		return fmt.Errorf("upstream %s is not reachable: %w", serviceURL, rawErr)
 	}
@@ -1491,11 +1522,8 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 	}
 	cfg.Tunnel = info.ID
 	cfg.CredentialsFile = info.CredentialsFile
-	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, a.localStackInfo())
+	originServiceURL, err := a.resolveReachableOriginServiceURL(project, settingsValue.DefaultServiceURL, a.localStackInfo(), settingsValue.InsecureSkipOriginTLS)
 	if err != nil {
-		return models.AppState{}, err
-	}
-	if err := checkLocalOriginReachable(originServiceURL, project.LocalHost, a.localStackInfo(), settingsValue.InsecureSkipOriginTLS); err != nil {
 		return models.AppState{}, err
 	}
 	cloudflare.UpsertIngressRule(&cfg, cloudflare.IngressRule{
@@ -1548,11 +1576,8 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 	}
 	a.stopProjectCommand()
 	stack := a.localStackInfo()
-	originServiceURL, err := resolveProjectOriginServiceURL(project, settingsValue.DefaultServiceURL, stack)
+	originServiceURL, err := a.resolveReachableOriginServiceURL(project, settingsValue.DefaultServiceURL, stack, settingsValue.InsecureSkipOriginTLS)
 	if err != nil {
-		return models.AppState{}, err
-	}
-	if err := checkLocalOriginReachable(originServiceURL, project.LocalHost, stack, settingsValue.InsecureSkipOriginTLS); err != nil {
 		return models.AppState{}, err
 	}
 	if err := a.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
@@ -1764,6 +1789,70 @@ func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback strin
 	return "", errors.New("a valid origin service URL is required")
 }
 
+// resolveReachableOriginServiceURL resolves the upstream URL cloudflared
+// should tunnel to and verifies it is actually answering. When the resolved
+// origin is the auto-swapped local-stack loopback URL (the user did not set
+// an explicit OriginURL / DefaultServiceURL) and the detected stack (EnvKit /
+// Herd / Valet / Laragon / …) is not actually running, we fall back to a live
+// dev server probed on the common ports. This keeps sharing working whether or
+// not the detected stack is currently up — running `php artisan serve`, Vite,
+// etc. should just work even when EnvKit's nginx is stopped.
+//
+// The stack-aware error from classifyUpstreamError is only returned when no
+// usable upstream could be found, so users without a running stack still get
+// the "point Exposely at your running dev server" guidance.
+func (a *App) resolveReachableOriginServiceURL(project models.ProjectPreset, fallback string, stack localstack.Info, insecureSkip bool) (string, error) {
+	originServiceURL, err := resolveProjectOriginServiceURL(project, fallback, stack)
+	if err != nil {
+		// No usable URL could be derived (e.g. no stack and no configured
+		// default). Try a live dev server before giving up.
+		if probed, ok := a.probeProjectDevServer(project); ok {
+			a.pushLog(models.LogEntry{
+				Timestamp: nowStamp(),
+				Source:    "auto",
+				Level:     "info",
+				Message:   fmt.Sprintf("Falling back to detected dev server at %s", probed),
+			})
+			return probed, nil
+		}
+		return "", err
+	}
+
+	reachErr := checkLocalOriginReachable(originServiceURL, project.LocalHost, stack, insecureSkip)
+	if reachErr == nil {
+		return originServiceURL, nil
+	}
+
+	// Auto-swapped stack origin that is not listening: prefer a live dev
+	// server if one is running so sharing still works without the stack.
+	if stack.Detected && isLocalLoopbackOrigin(originServiceURL) && isConnectionRefused(reachErr.Error()) {
+		if probed, ok := a.probeProjectDevServer(project); ok {
+			a.pushLog(models.LogEntry{
+				Timestamp: nowStamp(),
+				Source:    "auto",
+				Level:     "info",
+				Message: fmt.Sprintf("%s is not running on %s — falling back to detected dev server at %s",
+					stackHintLabel(stack), originServiceURL, probed),
+			})
+			return probed, nil
+		}
+	}
+
+	return "", reachErr
+}
+
+// probeProjectDevServer probes common dev-server ports (Laravel-first when the
+// project folder looks like a Laravel install) and returns the first one that
+// answers. It is the escape hatch used when an auto-swapped local-stack origin
+// is not reachable, so "normal" dev servers keep working.
+func (a *App) probeProjectDevServer(project models.ProjectPreset) (string, bool) {
+	dir := strings.TrimSpace(project.ProjectPath)
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return probeRunningDevServer(preferredDevServerPorts(dir))
+	}
+	return probeRunningDevServer(commonDevServerPorts)
+}
+
 // originServerNameForLoopbackHTTPS returns the SNI value cloudflared should
 // use when dialing an HTTPS upstream that lives on the loopback address.
 // Local dev stacks (EnvKit, Herd, Laragon with HTTPS, etc.) issue certs for
@@ -1825,6 +1914,56 @@ func looksLikeLaravelProjectDir(projectDir string) bool {
 		}
 	}
 	return true
+}
+
+// commonDevServerPorts is the shortlist of loopback ports Exposely probes
+// in Auto mode to auto-detect a running dev server (Laravel's
+// `php artisan serve`, Vite, React/Node, Angular, static-file servers,
+// etc.) when the project preset does not have an explicit LocalURL.
+// Order matches how Exposely already lists these in
+// waitForProjectServiceURL so we keep behaviour predictable.
+//
+// laravelFirstDevServerPorts pushes port 8000 to the front so
+// `php artisan serve` is preferred for folders that look like a Laravel
+// install — that is the exact scenario the caller-supplied hint is
+// meant to cover ("normal Laravel without EnvKit/Herd").
+var (
+	commonDevServerPorts       = []int{5173, 4173, 3000, 8080, 8000, 5500, 4321, 4200, 5000}
+	laravelFirstDevServerPorts = []int{8000, 8080, 8888, 5173, 4173, 3000, 5500, 4200, 5000}
+)
+
+// probeRunningDevServer walks the supplied port list on 127.0.0.1 and
+// returns the first URL that answers an HTTP GET with a non-5xx
+// response inside probeDevServerTimeout. It is used by Auto mode to
+// pick a live dev server (e.g. `php artisan serve` on :8000) instead of
+// force-swapping to the local stack's HTTPS URL when no stack is
+// actually running.
+//
+// Ports that fail to connect / time out / return 5xx are treated as
+// "not there" and skipped silently. An empty candidate list produces
+// ("", false).
+func probeRunningDevServer(ports []int) (string, bool) {
+	for _, port := range ports {
+		if port <= 0 || port > 65535 {
+			continue
+		}
+		serviceURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+		if err := checkLocalHTTPService(serviceURL); err == nil {
+			return serviceURL, true
+		}
+	}
+	return "", false
+}
+
+// preferredDevServerPorts returns the port-probe order for a given
+// project directory. Laravel-looking folders get 8000 pushed to the
+// front so `php artisan serve` is discovered first; everything else
+// uses the generic frontend-first ordering.
+func preferredDevServerPorts(projectDir string) []int {
+	if strings.TrimSpace(projectDir) != "" && looksLikeLaravelProjectDir(projectDir) {
+		return laravelFirstDevServerPorts
+	}
+	return commonDevServerPorts
 }
 
 func (a *App) isAdminLicensed() bool {

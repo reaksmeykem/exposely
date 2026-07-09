@@ -685,6 +685,47 @@ func detectCLILaravelProjectDir(projectDir string) bool {
 	return true
 }
 
+// commonCLIDevServerPorts / laravelFirstCLIDevServerPorts mirror the
+// corresponding app.go lists: they are the ports Auto mode probes on
+// 127.0.0.1 when the project preset has no explicit LocalURL. The
+// Laravel-first variant pushes 8000 to the front so
+// `php artisan serve` is picked up before Vite / React / other JS dev
+// servers when the folder looks like Laravel.
+var (
+	commonCLIDevServerPorts       = []int{5173, 4173, 3000, 8080, 8000, 5500, 4321, 4200, 5000}
+	laravelFirstCLIDevServerPorts = []int{8000, 8080, 8888, 5173, 4173, 3000, 5500, 4200, 5000}
+)
+
+// probeCLIRunningDevServer walks the supplied port list and returns the
+// first http://127.0.0.1:<port> that answers a fast HTTP GET. Auto mode
+// calls it before falling back to a stack-based *.test host so users
+// who already have `php artisan serve` (or any other dev server) running
+// get their tunnel pointed at the actual dev server instead of a dead
+// EnvKit / Herd loopback HTTPS URL.
+func probeCLIRunningDevServer(ports []int) (string, bool) {
+	for _, port := range ports {
+		if port <= 0 || port > 65535 {
+			continue
+		}
+		serviceURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+		if err := checkCLIHTTPService(serviceURL); err == nil {
+			return serviceURL, true
+		}
+	}
+	return "", false
+}
+
+// preferredCLIDevServerPorts returns the port-probe order for a given
+// project directory. Laravel-looking folders get 8000 pushed to the
+// front so `php artisan serve` wins the race against Vite / React
+// defaults; everything else uses the generic frontend-first ordering.
+func preferredCLIDevServerPorts(projectDir string) []int {
+	if strings.TrimSpace(projectDir) != "" && detectCLILaravelProjectDir(projectDir) {
+		return laravelFirstCLIDevServerPorts
+	}
+	return commonCLIDevServerPorts
+}
+
 func detectCLICommandPorts(commandText string) []int {
 	fields := strings.Fields(commandText)
 	ports := make([]int, 0, 4)

@@ -124,6 +124,20 @@ func (r *cliRunner) startAutoTunnel(settingsValue models.AppSettings, project mo
 	if err != nil {
 		return err
 	}
+	// Before assuming the user wants a stack-based *.test setup, sniff
+	// the loopback for a live dev server. This is the escape hatch for
+	// "normal Laravel" (`php artisan serve` on :8000), Vite, React,
+	// Angular, and anyone else who ran their dev server first and then
+	// hit `exposely share` without configuring --url. If we find one,
+	// we tunnel it directly — same behaviour as if the user had passed
+	// --url http://127.0.0.1:<port> explicitly.
+	if serviceURL, ok := probeCLIRunningDevServer(preferredCLIDevServerPorts(projectDir)); ok {
+		r.printLog("auto", "success", fmt.Sprintf("Detected running local dev server at %s — tunneling that instead of the auto-inferred .test host", serviceURL))
+		if err := r.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
+			return err
+		}
+		return r.waitUntilInterrupted()
+	}
 	if detectCLILaravelProjectDir(projectDir) {
 		laravelProject := project
 		laravelProject.LocalHost = inferCLIHostFromProjectPath(projectDir)
