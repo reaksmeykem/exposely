@@ -33,6 +33,56 @@ type AppSettings struct {
 	Language              string          `json:"language"`
 	Theme                 string          `json:"theme"`
 	Projects              []ProjectPreset `json:"projects"`
+	// Stack holds the optional Exposely-managed local dev stack
+	// (nginx + PHP + MySQL). Every field is opt-in: empty paths mean
+	// "do not manage this service".
+	Stack StackSettings `json:"stack"`
+}
+
+// StackSettings stores the binary paths and ports for the services
+// Exposely can run on the user's behalf. Ports default to the canonical
+// values when zero.
+type StackSettings struct {
+	NginxBinaryPath string `json:"nginxBinaryPath,omitempty"`
+	PHPCGIBinaryPath string `json:"phpCgiBinaryPath,omitempty"`
+	MySQLDBinaryPath string `json:"mysqldBinaryPath,omitempty"`
+	// NginxPort is the HTTP port nginx listens on (default 8090 to
+	// avoid clashing with any existing server on 80).
+	NginxPort int `json:"nginxPort,omitempty"`
+	// PHPPort is the FastCGI port php-cgi binds (default 9000).
+	PHPPort int `json:"phpPort,omitempty"`
+	// MySQLPort is the mysqld port (default 3306).
+	MySQLPort int `json:"mysqlPort,omitempty"`
+	// PHPWorkers controls how many php-cgi workers to spawn (default 4).
+	PHPWorkers int `json:"phpWorkers,omitempty"`
+}
+
+func (s StackSettings) EffectiveNginxPort() int {
+	if s.NginxPort > 0 {
+		return s.NginxPort
+	}
+	return 8090
+}
+
+func (s StackSettings) EffectivePHPPort() int {
+	if s.PHPPort > 0 {
+		return s.PHPPort
+	}
+	return 9000
+}
+
+func (s StackSettings) EffectiveMySQLPort() int {
+	if s.MySQLPort > 0 {
+		return s.MySQLPort
+	}
+	return 3306
+}
+
+func (s StackSettings) EffectivePHPWorkers() int {
+	if s.PHPWorkers > 0 {
+		return s.PHPWorkers
+	}
+	return 4
 }
 
 func DefaultSettings() AppSettings {

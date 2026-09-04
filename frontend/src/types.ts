@@ -23,6 +23,25 @@ export interface AppSettings {
   language: string;
   theme?: 'dark' | 'light';
   projects: ProjectPreset[];
+  stack?: StackSettings;
+}
+
+export interface StackSettings {
+  nginxBinaryPath?: string;
+  phpCgiBinaryPath?: string;
+  mysqldBinaryPath?: string;
+  nginxPort?: number;
+  phpPort?: number;
+  mysqlPort?: number;
+  phpWorkers?: number;
+}
+
+export interface StackServiceStatus {
+  service: string;
+  running: boolean;
+  pid: number;
+  startedAt: string;
+  lastError?: string;
 }
 
 export interface LicenseState {

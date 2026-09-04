@@ -31,6 +31,7 @@ import (
 	"github.com/reaksmeykem/exposely/internal/localstack"
 	"github.com/reaksmeykem/exposely/internal/models"
 	"github.com/reaksmeykem/exposely/internal/settings"
+	"github.com/reaksmeykem/exposely/internal/stacks"
 	"github.com/reaksmeykem/exposely/internal/sysproc"
 	"github.com/reaksmeykem/exposely/internal/version"
 )
@@ -56,6 +57,7 @@ type App struct {
 	updateInfo    models.UpdateInfo
 	localStackMu  sync.RWMutex
 	localStack    localstack.Info
+	stacks        *stacks.Manager
 }
 
 func NewApp() (*App, error) {
@@ -80,7 +82,158 @@ func NewApp() (*App, error) {
 	}
 	app.manager = cloudflare.NewManager(app.configPath, app.pushLog, app.pushStatus)
 	app.localStack = localstack.Detect()
+	app.stacks = stacks.NewManager()
 	return app, nil
+}
+
+// applyStackConfigs registers the user's stack binary paths with the
+// stacks.Manager and generates the nginx.conf Exposely will pass to
+// nginx at start time. Called from RefreshState so settings edited in
+// the UI (or settings.json edited by hand) take effect without a
+// restart.
+func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
+	if a.stacks == nil {
+		a.stacks = stacks.NewManager()
+	}
+	stack := settingsValue.Stack
+
+	if strings.TrimSpace(stack.NginxBinaryPath) != "" {
+		sites := []stacks.SiteConfig{{
+			ServerName: "localhost",
+			Root:       filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath)),
+			ListenPort: stack.EffectiveNginxPort(),
+			Index:      []string{"index.html", "index.php"},
+		}}
+		if confPath, err := a.stackNginxConfPath(); err == nil {
+			conf := stacks.RenderNginxConf(filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath)), stack.EffectiveNginxPort(), sites)
+			if writeErr := stacks.WriteFile(confPath, conf); writeErr == nil {
+				a.stacks.SetConfig(stacks.ServiceNginx, stacks.ServiceConfig{
+					BinaryPath: stack.NginxBinaryPath,
+					Args:       []string{"-p", filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath)), "-c", confPath},
+				})
+			}
+		}
+	} else {
+		a.stacks.SetConfig(stacks.ServiceNginx, stacks.ServiceConfig{})
+	}
+
+	if strings.TrimSpace(stack.PHPCGIBinaryPath) != "" {
+		a.stacks.SetConfig(stacks.ServicePHP, stacks.ServiceConfig{
+			BinaryPath: stack.PHPCGIBinaryPath,
+			Args:       stacks.PHPStartArgs(stack.EffectivePHPPort(), stack.EffectivePHPWorkers()),
+		})
+	} else {
+		a.stacks.SetConfig(stacks.ServicePHP, stacks.ServiceConfig{})
+	}
+
+	if strings.TrimSpace(stack.MySQLDBinaryPath) != "" {
+		mysqlArgs := stacks.MySQLStartArgs(stacks.MySQLDefaults{
+			BaseDir: filepath.Dir(strings.TrimSpace(stack.MySQLDBinaryPath)),
+			DataDir: a.stackMySQLDataDir(),
+			Port:    stack.EffectiveMySQLPort(),
+		})
+		a.stacks.SetConfig(stacks.ServiceMySQL, stacks.ServiceConfig{
+			BinaryPath: stack.MySQLDBinaryPath,
+			Args:       mysqlArgs,
+			Env:        []string{"MYSQL_HOME=" + filepath.Dir(strings.TrimSpace(stack.MySQLDBinaryPath))},
+		})
+	} else {
+		a.stacks.SetConfig(stacks.ServiceMySQL, stacks.ServiceConfig{})
+	}
+}
+
+func (a *App) stackNginxConfPath() (string, error) {
+	if strings.TrimSpace(a.appDataDir) == "" {
+		return "", errors.New("app data dir is not initialised yet")
+	}
+	return filepath.Join(a.appDataDir, "stacks", "nginx", "nginx.conf"), nil
+}
+
+func (a *App) stackMySQLDataDir() string {
+	return filepath.Join(a.appDataDir, "stacks", "mysql", "data")
+}
+
+// StackStatus reports the current state of the Exposely-managed stack
+// services. Safe to call before any service is configured.
+func (a *App) StackStatus() []stacks.Status {
+	if a.stacks == nil {
+		return []stacks.Status{}
+	}
+	return a.stacks.AllStatus()
+}
+
+// StartStackService starts one of "nginx", "php", or "mysql". For mysql
+// it first initialises the data dir when needed. Returns the refreshed
+// AppState so the UI updates in one round-trip.
+func (a *App) StartStackService(service string) (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	a.applyStackConfigs(settingsValue)
+
+	normalized := stacks.Service(strings.ToLower(strings.TrimSpace(service)))
+	switch normalized {
+	case stacks.ServiceNginx, stacks.ServicePHP:
+		// nothing extra
+	case stacks.ServiceMySQL:
+		cfg, _ := a.stacks.Config(stacks.ServiceMySQL)
+		if strings.TrimSpace(cfg.BinaryPath) == "" {
+			return models.AppState{}, errors.New("mysqld binary path is not configured in Settings")
+		}
+		dataDir := a.stackMySQLDataDir()
+		a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "info", Message: "Ensuring MySQL data directory at " + dataDir})
+		if err := stacks.EnsureMySQLDataDir(cfg.BinaryPath, dataDir); err != nil {
+			return models.AppState{}, err
+		}
+	default:
+		return models.AppState{}, fmt.Errorf("unknown stack service %q (use nginx, php, or mysql)", service)
+	}
+
+	status := a.stacks.Start(normalized)
+	if !status.Running && status.LastError != "" {
+		return models.AppState{}, errors.New(status.LastError)
+	}
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "success", Message: "Started " + string(normalized)})
+	return a.RefreshState()
+}
+
+// StartStack brings the whole managed stack up in dependency order:
+// MySQL first, then PHP, then nginx.
+func (a *App) StartStack() (models.AppState, error) {
+	for _, service := range []stacks.Service{stacks.ServiceMySQL, stacks.ServicePHP, stacks.ServiceNginx} {
+		if _, err := a.StartStackService(string(service)); err != nil {
+			return models.AppState{}, err
+		}
+	}
+	return a.RefreshState()
+}
+
+// StopStackService stops one managed service by name.
+func (a *App) StopStackService(service string) (models.AppState, error) {
+	if a.stacks == nil {
+		return models.AppState{}, errors.New("stack manager is not running")
+	}
+	normalized := stacks.Service(strings.ToLower(strings.TrimSpace(service)))
+	switch normalized {
+	case stacks.ServiceNginx, stacks.ServicePHP, stacks.ServiceMySQL:
+	default:
+		return models.AppState{}, fmt.Errorf("unknown stack service %q (use nginx, php, or mysql)", service)
+	}
+	a.stacks.Stop(normalized)
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "info", Message: "Stopped " + string(normalized)})
+	return a.RefreshState()
+}
+
+// StopStack stops every managed stack service in reverse dependency
+// order (nginx first, then PHP, then MySQL).
+func (a *App) StopStack() (models.AppState, error) {
+	if a.stacks == nil {
+		return models.AppState{}, errors.New("stack manager is not running")
+	}
+	a.stacks.StopAll()
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "info", Message: "Stopped managed stack services"})
+	return a.RefreshState()
 }
 
 // refreshLocalStack re-runs the local-stack detector and stores the
@@ -111,6 +264,9 @@ func (a *App) shutdown(context.Context) {
 	_ = a.manager.StopTunnel()
 	a.stopProjectCommand()
 	a.stopBuild()
+	if a.stacks != nil {
+		a.stacks.StopAll()
+	}
 }
 
 func (a *App) Bootstrap() (models.AppState, error) {
@@ -127,6 +283,7 @@ func (a *App) RefreshState() (models.AppState, error) {
 	if saveErr := a.store.Save(settingsValue); saveErr != nil {
 		return models.AppState{}, saveErr
 	}
+	a.applyStackConfigs(settingsValue)
 
 	detectedPath, detectErr := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
 	if detectErr == nil && detectedPath != settingsValue.CloudflaredPath {

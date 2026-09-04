@@ -2,7 +2,7 @@ import './style.css';
 import { api } from './api';
 import { t, setLang, getLang } from './i18n';
 import { WindowCenter, WindowIsMaximised, WindowSetMinSize, WindowSetSize, WindowUnmaximise } from '../wailsjs/runtime/runtime';
-import type { AppState, LogEntry, ProjectPreset, ShareMode, TunnelStatus } from './types';
+import type { AppState, LogEntry, ProjectPreset, ShareMode, StackServiceStatus, TunnelStatus } from './types';
 
 type NoticeTone = 'info' | 'success' | 'error';
 
@@ -27,6 +27,15 @@ interface UIState {
   busy: string | null;
   licenseDraft: string;
   projectSearch: string;
+  stackStatuses: StackServiceStatus[];
+  stackDraft: {
+    nginxBinaryPath: string;
+    phpCgiBinaryPath: string;
+    mysqldBinaryPath: string;
+    nginxPort: number;
+    phpPort: number;
+    mysqlPort: number;
+  };
 }
 
 const blankProject = (): ProjectPreset => ({
@@ -40,6 +49,15 @@ const blankProject = (): ProjectPreset => ({
   localURL: '',
   startCommand: '',
   shareMode: 'auto',
+});
+
+const blankStackDraft = () => ({
+  nginxBinaryPath: '',
+  phpCgiBinaryPath: '',
+  mysqldBinaryPath: '',
+  nginxPort: 8090,
+  phpPort: 9000,
+  mysqlPort: 3306,
 });
 
 const state: UIState = {
@@ -58,6 +76,8 @@ const state: UIState = {
   busy: null,
   licenseDraft: '',
   projectSearch: '',
+  stackStatuses: [],
+  stackDraft: blankStackDraft(),
 };
 
 const rootElement = document.querySelector<HTMLDivElement>('#app');
@@ -931,10 +951,36 @@ function render() {
                         </span>
                       </label>
                       <div class="action-row wide"><button type="submit">${t('save')}</button></div>
-                    </form>
-                  </article>
-                 `
-                : state.activeTab === 'logs'
+                     </form>
+                   </article>
+
+                   <article class="panel compact-panel">
+                     <div class="panel-header">
+                       <div>
+                         <p class="eyebrow">${t('stackSectionTitle')}</p>
+                         <h2>${t('stackSectionSubtitle')}</h2>
+                       </div>
+                       <div class="action-row">
+                         <button type="button" class="secondary" data-action="stack-start-all">${t('stackStartAll')}</button>
+                         <button type="button" class="secondary" data-action="stack-stop-all">${t('stackStopAll')}</button>
+                       </div>
+                     </div>
+                     <form id="stack-form" class="form-grid">
+                       <label>${t('stackNginxPath')}<input name="nginxBinaryPath" value="${escapeHtml(state.stackDraft.nginxBinaryPath)}" placeholder="C:\\nginx\\nginx.exe" /></label>
+                       <label>${t('stackPhpPath')}<input name="phpCgiBinaryPath" value="${escapeHtml(state.stackDraft.phpCgiBinaryPath)}" placeholder="C:\\php\\php-cgi.exe" /></label>
+                       <label>${t('stackMysqlPath')}<input name="mysqldBinaryPath" value="${escapeHtml(state.stackDraft.mysqldBinaryPath)}" placeholder="C:\\mysql\\bin\\mysqld.exe" /></label>
+                       <label>${t('stackNginxPort')}<input type="number" min="1" max="65535" name="nginxPort" value="${escapeHtml(String(state.stackDraft.nginxPort ?? 8090))}" /></label>
+                       <label>${t('stackPhpPort')}<input type="number" min="1" max="65535" name="phpPort" value="${escapeHtml(String(state.stackDraft.phpPort ?? 9000))}" /></label>
+                       <label>${t('stackMysqlPort')}<input type="number" min="1" max="65535" name="mysqlPort" value="${escapeHtml(String(state.stackDraft.mysqlPort ?? 3306))}" /></label>
+                       <div class="action-row wide"><button type="submit">${t('stackSave')}</button></div>
+                     </form>
+                     <div class="metric-grid metric-grid-section">
+                       ${stackStatusCards()}
+                     </div>
+                     <p class="hint">${t('stackHint')}</p>
+                   </article>
+                  `
+                 : state.activeTab === 'logs'
                 ? `
                   <section class="panel logs-panel">
                     <div class="panel-header">
@@ -1004,6 +1050,35 @@ function render() {
 
 function formValue(form: HTMLFormElement, name: string): string {
   return (form.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null)?.value?.trim() ?? '';
+}
+
+function syncStackDraftFromState(appState: AppState) {
+  const stack = appState.settings.stack ?? {};
+  state.stackDraft = {
+    nginxBinaryPath: stack.nginxBinaryPath ?? '',
+    phpCgiBinaryPath: stack.phpCgiBinaryPath ?? '',
+    mysqldBinaryPath: stack.mysqldBinaryPath ?? '',
+    nginxPort: stack.nginxPort ?? 8090,
+    phpPort: stack.phpPort ?? 9000,
+    mysqlPort: stack.mysqlPort ?? 3306,
+  };
+}
+
+function stackStatusCards(): string {
+  if (!state.stackStatuses.length) {
+    return '';
+  }
+  return state.stackStatuses
+    .map((st) => {
+      const badge = st.running ? '<span class="pill pill-success">running</span>' : '<span class="pill pill-outline">stopped</span>';
+      const detail = st.running ? `pid ${st.pid}` : escapeHtml(st.lastError || '');
+      return `<div class="metric-card">
+        <span class="summary-label">${escapeHtml(st.service)}</span>
+        <strong>${badge}</strong>
+        <p>${escapeHtml(detail)}</p>
+      </div>`;
+    })
+    .join('');
 }
 
 function formChecked(form: HTMLFormElement, name: string): boolean {
@@ -1094,6 +1169,28 @@ function bindForms() {
     const next = await withAction(t('save'), () => api.saveSettings(payload));
     if (next) {
       state.appState = next;
+      setNotice('success', t('settingsSaved'));
+    }
+  });
+
+  const stackForm = root.querySelector<HTMLFormElement>('#stack-form');
+  stackForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const payload = {
+      ...state.appState!.settings,
+      stack: {
+        nginxBinaryPath: formValue(stackForm, 'nginxBinaryPath'),
+        phpCgiBinaryPath: formValue(stackForm, 'phpCgiBinaryPath'),
+        mysqldBinaryPath: formValue(stackForm, 'mysqldBinaryPath'),
+        nginxPort: Number(formValue(stackForm, 'nginxPort')) || 8090,
+        phpPort: Number(formValue(stackForm, 'phpPort')) || 9000,
+        mysqlPort: Number(formValue(stackForm, 'mysqlPort')) || 3306,
+      },
+    };
+    const next = await withAction(t('save'), () => api.saveSettings(payload));
+    if (next) {
+      state.appState = next;
+      syncStackDraftFromState(next);
       setNotice('success', t('settingsSaved'));
     }
   });
@@ -1231,6 +1328,46 @@ async function handleAction(action: string, id: string | null) {
       syncEditorFromForm();
       state.editorProject.subdomain = randomSubdomainValue();
       render();
+      return;
+    }
+    case 'stack-start-all': {
+      const next = await withAction(t('stackStartAll'), () => api.startStack());
+      if (next) {
+        state.appState = next;
+        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        setNotice('success', t('stackStarted'));
+      }
+      return;
+    }
+    case 'stack-stop-all': {
+      const next = await withAction(t('stackStopAll'), () => api.stopStack());
+      if (next) {
+        state.appState = next;
+        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        setNotice('success', t('stackStopped'));
+      }
+      return;
+    }
+    case 'stack-start-service': {
+      const service = id ?? '';
+      if (!service) return;
+      const next = await withAction(`${t('stackStart')} ${service}`, () => api.startStackService(service));
+      if (next) {
+        state.appState = next;
+        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        setNotice('success', `${service} ${t('stackStarted')}`);
+      }
+      return;
+    }
+    case 'stack-stop-service': {
+      const service = id ?? '';
+      if (!service) return;
+      const next = await withAction(`${t('stackStop')} ${service}`, () => api.stopStackService(service));
+      if (next) {
+        state.appState = next;
+        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        setNotice('success', `${service} ${t('stackStopped')}`);
+      }
       return;
     }
     case 'copy-url': {
@@ -1535,7 +1672,15 @@ async function bootstrap() {
   syncProjectUrlsFromState(next);
   state.selectedProjectId = next.settings.projects[0]?.id ?? null;
   state.activeProjectId = inferActiveProjectId(next);
+  syncStackDraftFromState(next);
   render();
+
+  void api.stackStatus().then((statuses) => {
+    state.stackStatuses = statuses ?? [];
+    render();
+  }).catch(() => {
+    // Stack status is optional; ignore when bindings are unavailable.
+  });
 
   void api.checkForUpdates().then((latest) => {
     state.appState = latest;

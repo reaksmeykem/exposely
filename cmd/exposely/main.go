@@ -59,6 +59,10 @@ func main() {
 		if err := runShareCommand(runner, args); err != nil {
 			exitWithError(err)
 		}
+	case "stack":
+		if err := runStackCommand(runner, args); err != nil {
+			exitWithError(err)
+		}
 	default:
 		printCLIUsage()
 		exitWithError(fmt.Errorf("unknown command %q", command))
@@ -194,6 +198,9 @@ Usage:
   exposely share --mode host-html
   exposely share --start "npm run dev -- --port 4173"
   exposely share --host app.test --mode stable --subdomain my-app
+  exposely stack start [nginx|php|mysql]
+  exposely stack stop
+  exposely stack status
   exposely update
   exposely version
 
@@ -205,6 +212,7 @@ Notes:
   - saved projects are loaded from the same settings file used by the desktop app.
   - quick, auto, and host-html modes create ephemeral public URLs.
   - stable and random-domain modes require a configured Cloudflare domain and local host.
+  - "stack" runs the optional Exposely-managed nginx/PHP/MySQL services configured in Settings.
   - "update" downloads the latest CLI release from GitHub and replaces the current executable.`)
 }
 

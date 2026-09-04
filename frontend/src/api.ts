@@ -1,4 +1,4 @@
-import type { AppSettings, AppState, ProjectPreset, TunnelUsage } from './types';
+import type { AppSettings, AppState, ProjectPreset, StackServiceStatus, TunnelUsage } from './types';
 
 type AppBindings = NonNullable<NonNullable<NonNullable<typeof window.go>['main']>['App']>;
 
@@ -40,4 +40,9 @@ export const api = {
   browseProjectFolder: (currentPath: string): Promise<string> => appBinding().BrowseProjectFolder(currentPath),
   testProject: (id: string): Promise<string> => appBinding().TestProject(id),
   getTunnelUsage: (): Promise<TunnelUsage> => (appBinding() as AppBindings & { GetTunnelUsage(): Promise<TunnelUsage> }).GetTunnelUsage(),
+  startStackService: (service: string): Promise<AppState> => (appBinding() as AppBindings & { StartStackService(service: string): Promise<AppState> }).StartStackService(service),
+  stopStackService: (service: string): Promise<AppState> => (appBinding() as AppBindings & { StopStackService(service: string): Promise<AppState> }).StopStackService(service),
+  startStack: (): Promise<AppState> => (appBinding() as AppBindings & { StartStack(): Promise<AppState> }).StartStack(),
+  stopStack: (): Promise<AppState> => (appBinding() as AppBindings & { StopStack(): Promise<AppState> }).StopStack(),
+  stackStatus: (): Promise<StackServiceStatus[]> => (appBinding() as AppBindings & { StackStatus(): Promise<StackServiceStatus[]> }).StackStatus(),
 };
