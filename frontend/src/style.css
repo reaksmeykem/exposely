@@ -276,6 +276,43 @@ label {
   display: inline-flex;
 }
 
+.stack-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.stack-toggle:hover:not(:disabled) {
+  background: var(--panel-strong);
+  border-color: var(--border-strong);
+}
+
+.stack-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.stack-toggle-on {
+  border-color: var(--success, #2ea36b);
+  color: var(--success, #2ea36b);
+}
+
+.stack-toggle-badge {
+  font-size: 0.72rem;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel-muted, rgba(127, 127, 127, 0.15));
+  font-variant-numeric: tabular-nums;
+}
+
 .flag-icon {
   width: 24px;
   height: 16px;

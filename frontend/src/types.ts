@@ -19,6 +19,7 @@ export interface AppSettings {
   cloudflaredPath: string;
   defaultServiceURL: string;
   insecureSkipOriginTls: boolean;
+  devServerFallback?: boolean | null;
   licenseToken?: string;
   language: string;
   theme?: 'dark' | 'light';

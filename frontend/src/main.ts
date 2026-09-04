@@ -536,6 +536,9 @@ function render() {
   const projectUrl = project ? resolvedProjectURL(project, appState) : '';
   const hasProjects = appState.settings.projects.length > 0;
   const shareToolReady = appState.cloudflaredDetected;
+  const stackConfigured = !!(appState.settings.stack && (appState.settings.stack.nginxBinaryPath || appState.settings.stack.phpCgiBinaryPath || appState.settings.stack.mysqldBinaryPath));
+  const stackRunningCount = state.stackStatuses.filter((s) => s.running).length;
+  const stackTotalCount = state.stackStatuses.length || 3;
   const canSetupTunnel = shareToolReady;
   const shareAction = project ? shareActionForProject(project) : null;
   const canShareSelectedProject = Boolean(
@@ -677,6 +680,11 @@ function render() {
             </button>
           </nav>
           <div class="navbar-actions">
+            <button type="button" class="stack-toggle ${stackRunningCount > 0 ? 'stack-toggle-on' : ''}" data-action="stack-toggle-all" title="${stackRunningCount > 0 ? t('stackStopAll') : t('stackStartAll')}" ${!stackConfigured ? 'disabled' : ''}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"></path><circle cx="9" cy="6" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="15" cy="12" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="7" cy="18" r="1.6" fill="currentColor" stroke="none"></circle></svg>
+              <span>Stack</span>
+              <span class="stack-toggle-badge">${stackRunningCount}/${stackTotalCount}</span>
+            </button>
             <button type="button" class="icon-switch" data-action="toggle-theme" aria-label="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}" title="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}">
               ${themeIcon(nextTheme())}
             </button>
@@ -950,6 +958,13 @@ function render() {
                           <small class="hint">${t('insecureSkipOriginTlsHint')}</small>
                         </span>
                       </label>
+                      <label class="checkbox-row">
+                        <input type="checkbox" name="devServerFallback" ${appState.settings.devServerFallback !== false ? 'checked' : ''} />
+                        <span>
+                          <strong>${t('devServerFallback')}</strong>
+                          <small class="hint">${t('devServerFallbackHint')}</small>
+                        </span>
+                      </label>
                       <div class="action-row wide"><button type="submit">${t('save')}</button></div>
                      </form>
                    </article>
@@ -1165,6 +1180,7 @@ function bindForms() {
         cloudflaredPath: formValue(settingsForm, 'cloudflaredPath'),
         defaultServiceURL: formValue(settingsForm, 'defaultServiceURL'),
         insecureSkipOriginTls: formChecked(settingsForm, 'insecureSkipOriginTls'),
+        devServerFallback: formChecked(settingsForm, 'devServerFallback'),
       };
     const next = await withAction(t('save'), () => api.saveSettings(payload));
     if (next) {
@@ -1328,6 +1344,19 @@ async function handleAction(action: string, id: string | null) {
       syncEditorFromForm();
       state.editorProject.subdomain = randomSubdomainValue();
       render();
+      return;
+    }
+    case 'stack-toggle-all': {
+      // One-click switch in the navbar: turn the whole stack on, or off
+      // when any service is already running.
+      const turningOff = state.stackStatuses.some((s) => s.running);
+      const action = turningOff ? api.stopStack() : api.startStack();
+      const next = await withAction(turningOff ? t('stackStopAll') : t('stackStartAll'), () => action);
+      if (next) {
+        state.appState = next;
+        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        setNotice('success', turningOff ? t('stackStopped') : t('stackStarted'));
+      }
       return;
     }
     case 'stack-start-all': {

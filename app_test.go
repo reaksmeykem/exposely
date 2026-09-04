@@ -633,3 +633,63 @@ func TestClassifyUpstreamErrorGenericLoopbackHint(t *testing.T) {
 		t.Fatalf("expected generic 'start your local web server' guidance, got %q", msg)
 	}
 }
+
+
+func TestVerifyProbedDevServerRejectsForeignApp(t *testing.T) {
+	// A non-PHP app (e.g. the Python uvicorn incident) squatting on a
+	// common port must be rejected for Laravel projects.
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><title>Khmer AI Voiceover</title><body>python uvicorn app</body></html>"))
+	}))
+	defer foreign.Close()
+
+	// Realistic Laravel project dir so the identity check kicks in.
+	laravelDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(laravelDir, "artisan"), []byte("#!/usr/bin/env php\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(laravelDir, "public"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(laravelDir, "public", "index.php"), []byte("<?php // laravel front controller\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	project := models.ProjectPreset{
+		DisplayName: "Affinity Star",
+		LocalHost:   "affinity-start.test",
+		ProjectPath: laravelDir,
+	}
+	if verifyProbedDevServer(foreign.URL, project) {
+		t.Fatal("foreign non-PHP app must be rejected for a Laravel project")
+	}
+}
+
+func TestVerifyProbedDevServerAcceptsLaravelApp(t *testing.T) {
+	laravel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "XSRF-TOKEN", Value: "abc"})
+		_, _ = w.Write([]byte("<html><meta name=\"csrf-token\" content=\"x\"></html>"))
+	}))
+	defer laravel.Close()
+
+	project := models.ProjectPreset{
+		DisplayName: "Affinity Star",
+		LocalHost:   "affinity-start.test",
+	}
+	if !verifyProbedDevServer(laravel.URL, project) {
+		t.Fatal("a real Laravel response must be accepted")
+	}
+}
+
+func TestVerifyProbedDevServerNonLaravelProjectAcceptsResponder(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("<html><title>Vite App</title></html>"))
+	}))
+	defer plain.Close()
+
+	project := models.ProjectPreset{DisplayName: "vite-app"}
+	if !verifyProbedDevServer(plain.URL, project) {
+		t.Fatal("non-Laravel projects keep the old accept-first behaviour")
+	}
+}

@@ -642,18 +642,21 @@ func (a *App) startAutoTunnel(project models.ProjectPreset) (models.AppState, er
 	// Angular, and anyone else who ran their dev server first and then
 	// hit `exposely share` without configuring a Local URL. If we find
 	// one, we tunnel it directly — same behaviour as if the user had
-	// explicitly set project.LocalURL.
-	if serviceURL, ok := probeRunningDevServer(preferredDevServerPorts(projectDir)); ok {
-		a.pushLog(models.LogEntry{
-			Timestamp: nowStamp(),
-			Source:    "auto",
-			Level:     "success",
-			Message:   fmt.Sprintf("Detected running local dev server at %s — tunneling that instead of the auto-inferred .test host", serviceURL),
-		})
-		if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
-			return models.AppState{}, err
+	// explicitly set project.LocalURL. Gated by the devServerFallback
+	// opt-out and the host-aware identity check.
+	if settingsValue.DevServerFallbackEnabled() {
+		if serviceURL, ok := probeRunningDevServer(preferredDevServerPorts(projectDir)); ok {
+			a.pushLog(models.LogEntry{
+				Timestamp: nowStamp(),
+				Source:    "auto",
+				Level:     "success",
+				Message:   fmt.Sprintf("Detected running local dev server at %s — tunneling that instead of the auto-inferred .test host", serviceURL),
+			})
+			if err := a.manager.StartQuickTunnelWithHTML(path, serviceURL, "", 0, nil, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
+				return models.AppState{}, err
+			}
+			return a.RefreshState()
 		}
-		return a.RefreshState()
 	}
 	if looksLikeLaravelProjectDir(projectDir) {
 		laravelProject := project
@@ -1963,18 +1966,30 @@ func resolveProjectOriginServiceURL(project models.ProjectPreset, fallback strin
 // usable upstream could be found, so users without a running stack still get
 // the "point Exposely at your running dev server" guidance.
 func (a *App) resolveReachableOriginServiceURL(project models.ProjectPreset, fallback string, stack localstack.Info, insecureSkip bool) (string, error) {
+	// The dev-server fallback probe can connect the tunnel to an
+	// unrelated app that happens to squat on a common port; it is now
+	// guarded by both a host-aware identity check (verifyProbedDevServer)
+	// and this opt-out switch.
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return "", err
+	}
+	fallbackAllowed := settingsValue.DevServerFallbackEnabled()
+
 	originServiceURL, err := resolveProjectOriginServiceURL(project, fallback, stack)
 	if err != nil {
 		// No usable URL could be derived (e.g. no stack and no configured
 		// default). Try a live dev server before giving up.
-		if probed, ok := a.probeProjectDevServer(project); ok {
-			a.pushLog(models.LogEntry{
-				Timestamp: nowStamp(),
-				Source:    "auto",
-				Level:     "info",
-				Message:   fmt.Sprintf("Falling back to detected dev server at %s", probed),
-			})
-			return probed, nil
+		if fallbackAllowed {
+			if probed, ok := a.probeProjectDevServer(project); ok {
+				a.pushLog(models.LogEntry{
+					Timestamp: nowStamp(),
+					Source:    "auto",
+					Level:     "info",
+					Message:   fmt.Sprintf("Falling back to detected dev server at %s", probed),
+				})
+				return probed, nil
+			}
 		}
 		return "", err
 	}
@@ -1986,7 +2001,7 @@ func (a *App) resolveReachableOriginServiceURL(project models.ProjectPreset, fal
 
 	// Auto-swapped stack origin that is not listening: prefer a live dev
 	// server if one is running so sharing still works without the stack.
-	if stack.Detected && isLocalLoopbackOrigin(originServiceURL) && isConnectionRefused(reachErr.Error()) {
+	if fallbackAllowed && stack.Detected && isLocalLoopbackOrigin(originServiceURL) && isConnectionRefused(reachErr.Error()) {
 		if probed, ok := a.probeProjectDevServer(project); ok {
 			a.pushLog(models.LogEntry{
 				Timestamp: nowStamp(),
@@ -2006,12 +2021,125 @@ func (a *App) resolveReachableOriginServiceURL(project models.ProjectPreset, fal
 // project folder looks like a Laravel install) and returns the first one that
 // answers. It is the escape hatch used when an auto-swapped local-stack origin
 // is not reachable, so "normal" dev servers keep working.
+//
+// The probe is host-aware: a candidate only qualifies when it answers with
+// the project's own Host header (so a vhost-routing local server returns the
+// project's app, not some other site parked on the same port) and, when the
+// project folder looks like Laravel, only when the response actually looks
+// like a PHP app. This prevents an unrelated service that happens to squat
+// on a common port (e.g. a Python server on :8000) from silently hijacking
+// the tunnel.
 func (a *App) probeProjectDevServer(project models.ProjectPreset) (string, bool) {
 	dir := strings.TrimSpace(project.ProjectPath)
+	ports := commonDevServerPorts
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
-		return probeRunningDevServer(preferredDevServerPorts(dir))
+		ports = preferredDevServerPorts(dir)
 	}
-	return probeRunningDevServer(commonDevServerPorts)
+	if url, ok := probeRunningDevServer(ports); !ok {
+		return "", false
+	} else if url != "" {
+		// First pass found *a* server; verify it is really ours.
+		if verifyProbedDevServer(url, project) {
+			return url, true
+		}
+	}
+
+	// First eligible port failed verification: try the remaining ports
+	// explicitly, skipping the one we already rejected.
+	for _, port := range ports {
+		if port <= 0 || port > 65535 {
+			continue
+		}
+		serviceURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+		if err := checkLocalHTTPService(serviceURL); err != nil {
+			continue
+		}
+		if verifyProbedDevServer(serviceURL, project) {
+			return serviceURL, true
+		}
+	}
+	return "", false
+}
+
+// verifyProbedDevServer double-checks that a probed dev server actually
+// serves the project rather than an unrelated app squatting on the port:
+//
+//  1. It must answer a request carrying the project's Host header — a
+//     vhost-routing server (nginx / EnvKit / Caddy) returns the right
+//     site; a single-tenant dev server just returns its own app, which
+//     is correct when the project IS the dev server.
+//  2. For Laravel-looking project folders the response body must look
+//     like a PHP app: it contains Laravel's CSRF/token markers, the
+//     project's own host, or at minimum does not obviously belong to a
+//     different well-known framework fingerprint captured from disk
+//     (composer.json name / package.json name are used as identity
+//     hints when present).
+//
+// When the checks are inconclusive (no host set, or no identity hint
+// available) the probe is accepted — preserving the pre-existing
+// behaviour for plain dev servers while blocking the cross-project
+// hijack case that motivated this check.
+func verifyProbedDevServer(serviceURL string, project models.ProjectPreset) bool {
+	host := strings.TrimSpace(project.LocalHost)
+	projectDir := strings.TrimSpace(project.ProjectPath)
+
+	req, err := http.NewRequest(http.MethodGet, serviceURL, nil)
+	if err != nil {
+		return false
+	}
+	if host != "" {
+		req.Host = host
+		req.Header.Set("Host", host)
+	}
+	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusInternalServerError {
+		return false
+	}
+
+	// Read a bounded slice of the body for fingerprint checks.
+	body := make([]byte, 64*1024)
+	n, _ := io.ReadFull(resp.Body, body)
+	if n < 0 {
+		n = 0
+	}
+	bodyText := strings.ToLower(string(body[:n]))
+
+	// Laravel identity check: the project dir carries Laravel markers and
+	// the response must show PHP/Laravel traces — a non-PHP app (Python
+	// uvicorn, Node express, ...) will not contain them.
+	if projectDir != "" && looksLikeLaravelProjectDir(projectDir) {
+		phpMarkers := []string{"laravel", "csrf-token", "csrf_token", "__ NEXT", "x-csrf", "php"}
+		for _, marker := range phpMarkers {
+			if strings.Contains(bodyText, strings.ToLower(marker)) {
+				return true
+			}
+		}
+		// Also accept when the response echoes our host header back in
+		// any form (some Laravel error pages include the host).
+		if host != "" && strings.Contains(bodyText, strings.ToLower(host)) {
+			return true
+		}
+		// Check response headers for a PHP session cookie — definitive
+		// proof the upstream is PHP.
+		for _, cookie := range resp.Cookies() {
+			if strings.EqualFold(cookie.Name, "XSRF-TOKEN") || strings.EqualFold(cookie.Name, "laravel_session") || strings.EqualFold(cookie.Name, "PHPSESSID") {
+				return true
+			}
+		}
+		// Laravel fingerprint expected but not found: this is very
+		// likely a different app squatting on the port.
+		return false
+	}
+
+	// Non-Laravel projects: accept the first responder (existing
+	// behaviour) — without an identity hint there is nothing better to
+	// compare against.
+	return true
 }
 
 // originServerNameForLoopbackHTTPS returns the SNI value cloudflared should

@@ -29,14 +29,25 @@ type AppSettings struct {
 	CloudflaredPath       string          `json:"cloudflaredPath"`
 	DefaultServiceURL     string          `json:"defaultServiceURL"`
 	InsecureSkipOriginTLS bool            `json:"insecureSkipOriginTls"`
-	LicenseToken          string          `json:"licenseToken,omitempty"`
-	Language              string          `json:"language"`
-	Theme                 string          `json:"theme"`
-	Projects              []ProjectPreset `json:"projects"`
+	// DevServerFallback controls whether Exposely may probe common
+	// dev-server ports (8000, 5173, ...) and tunnel to them when the
+	// configured origin (local stack / explicit URL) is not reachable.
+	// Nil pointer = unset = default true, preserving existing behaviour
+	// for users who never touch the setting.
+	DevServerFallback *bool  `json:"devServerFallback,omitempty"`
+	LicenseToken      string `json:"licenseToken,omitempty"`
+	Language          string `json:"language"`
+	Theme             string `json:"theme"`
+	Projects          []ProjectPreset `json:"projects"`
 	// Stack holds the optional Exposely-managed local dev stack
 	// (nginx + PHP + MySQL). Every field is opt-in: empty paths mean
 	// "do not manage this service".
 	Stack StackSettings `json:"stack"`
+}
+
+// DevServerFallbackEnabled resolves the tri-state setting to a bool.
+func (s AppSettings) DevServerFallbackEnabled() bool {
+	return s.DevServerFallback == nil || *s.DevServerFallback
 }
 
 // StackSettings stores the binary paths and ports for the services

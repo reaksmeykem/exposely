@@ -62,8 +62,10 @@ type Status struct {
 	Running bool    `json:"running"`
 	// PID is the child process id when Running is true, 0 otherwise.
 	PID int `json:"pid"`
-	// StartedAt is when the process was started (zero when not running).
-	StartedAt time.Time `json:"startedAt"`
+	// StartedAt is when the process was started as an RFC3339 string
+	// (empty when not running). A string rather than time.Time because
+	// Wails binding generation cannot resolve time.Time in bound types.
+	StartedAt string `json:"startedAt"`
 	// LastError holds the most recent start/stop failure message so the
 	// UI can surface it without needing a separate log stream.
 	LastError string `json:"lastError,omitempty"`
@@ -223,11 +225,15 @@ func (m *Manager) statusLocked(service Service) Status {
 		return Status{Service: service, LastError: p.lastErrorIfAny()}
 	}
 	running := p.cmd.Process != nil && p.cmd.ProcessState == nil
+	startedAt := ""
+	if running {
+		startedAt = p.startedAt.Format(time.RFC3339)
+	}
 	return Status{
 		Service:   service,
 		Running:   running,
 		PID:       pidOf(p.cmd),
-		StartedAt: p.startedAt,
+		StartedAt: startedAt,
 		LastError: p.lastError,
 	}
 }
