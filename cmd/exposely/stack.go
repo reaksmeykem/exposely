@@ -194,7 +194,7 @@ func (c *cliStackRunner) openDatabaseManager() (string, error) {
 	if nginxPath == "" {
 		return "", errors.New("the managed stack is not configured (set stack.nginxBinaryPath in settings.json)")
 	}
-	pmaDir, ok := stacks.DetectPhpMyAdmin()
+	pmaDir, ok := stacks.EnsureOwnedPhpMyAdmin(c.appDataDir)
 	if !ok {
 		return "", errors.New("phpMyAdmin was not found on this machine. Install it (or use EnvKit/Laragon/XAMPP which bundle it) and try again")
 	}

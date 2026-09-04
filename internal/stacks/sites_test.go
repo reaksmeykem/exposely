@@ -136,3 +136,74 @@ func TestDetectPhpMyAdminNotFoundInCleanEnv(t *testing.T) {
 	// both outcomes are acceptable - the contract is "no panic".
 	_, _ = DetectPhpMyAdmin()
 }
+
+func TestEnsureOwnedPhpMyAdminCopiesOnce(t *testing.T) {
+	// Build a fake "installed" phpMyAdmin source.
+	source := filepath.Join(t.TempDir(), "pma-src")
+	if err := os.MkdirAll(filepath.Join(source, "vendor", "phpmyadmin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "index.php"), []byte("<?php // pma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, "libraries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "libraries", "config.default.php"), []byte("<?php\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, "tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "tmp", "cache.dat"), []byte("junk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	appData := t.TempDir()
+	// Point detection at the fake source by pre-copying it into the only
+	// path DetectPhpMyAdmin would find... simpler: copy manually to
+	// simulate EnsureOwnedPhpMyAdmin's copy step via a patched flow:
+	owned := PhpMyAdminDataDir(appData)
+	if err := CopyDir(source, owned); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if !isPhpMyAdminDir(owned) {
+		t.Fatal("owned copy should validate as phpMyAdmin")
+	}
+	if _, err := os.Stat(filepath.Join(owned, "tmp", "cache.dat")); !os.IsNotExist(err) {
+		t.Fatal("tmp/ directory should be skipped when copying")
+	}
+	if _, err := os.Stat(filepath.Join(owned, "libraries", "config.default.php")); err != nil {
+		t.Fatal("regular directories must be copied")
+	}
+}
+
+func TestCopyDirMergesAndOverwrites(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+	if err := os.MkdirAll(filepath.Join(src, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a", "f.txt"), []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dst, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "a", "f.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyDir(src, dst); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dst, "a", "f.txt"))
+	if string(data) != "v1" {
+		t.Fatalf("existing file should be overwritten, got %q", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(dst, "keep.txt")); err != nil {
+		t.Fatal("unrelated files in dst must be preserved")
+	}
+}

@@ -1946,7 +1946,10 @@ func (a *App) OpenDatabaseManager() (string, error) {
 		return "", errors.New("the managed stack is not configured. Set the nginx binary path in Settings → Managed stack first")
 	}
 
-	pmaDir, ok := stacks.DetectPhpMyAdmin()
+	// Use Exposely's own phpMyAdmin copy (copied once from any detected
+	// install) so the Database manager keeps working even if EnvKit or
+	// the source stack is later uninstalled.
+	pmaDir, ok := stacks.EnsureOwnedPhpMyAdmin(a.appDataDir)
 	if !ok {
 		return "", errors.New("phpMyAdmin was not found on this machine. Install it (or use EnvKit/Laragon/XAMPP which bundle it) and try again")
 	}

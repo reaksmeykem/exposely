@@ -1,6 +1,7 @@
 package stacks
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -125,6 +126,104 @@ $cfg['Servers'][1]['port'] = '` + itoa(port) + `';
 $cfg['Servers'][1]['auth_type'] = 'cookie';
 $cfg['Servers'][1]['AllowNoPassword'] = true;
 `
+}
+
+// PhpMyAdminDataDir returns the directory where Exposely keeps its own
+// phpMyAdmin copy, independent of EnvKit / Laragon / XAMPP.
+func PhpMyAdminDataDir(appDataDir string) string {
+	return filepath.Join(appDataDir, "stacks", "phpmyadmin")
+}
+
+// EnsureOwnedPhpMyAdmin makes sure Exposely has its own phpMyAdmin copy
+// under <appDataDir>/stacks/phpmyadmin:
+//
+//  1. If the owned copy already exists and looks valid, use it.
+//  2. Otherwise locate any installed phpMyAdmin (EnvKit / Laragon /
+//     XAMPP / manual) and copy it into the data dir once. After that
+//     Exposely no longer depends on the source install - the user can
+//     even uninstall EnvKit.
+//  3. Returns the directory to serve and whether an owned copy exists.
+//
+// The copy skips junk (node_modules-style caches are not a thing here,
+// but EnvKit's opcache/temp files are) and is idempotent: an existing
+// owned copy is never re-copied over.
+func EnsureOwnedPhpMyAdmin(appDataDir string) (string, bool) {
+	owned := PhpMyAdminDataDir(appDataDir)
+	if isPhpMyAdminDir(owned) {
+		return owned, true
+	}
+
+	source, ok := DetectPhpMyAdmin()
+	if !ok {
+		return "", false
+	}
+	if err := CopyDir(source, owned); err != nil {
+		return "", false
+	}
+	// Guard against a partial copy (e.g. files locked by a running
+	// source install): only accept the copy when it validates.
+	if !isPhpMyAdminDir(owned) {
+		return "", false
+	}
+	return owned, true
+}
+
+// copyDirSkip lists directory names excluded when copying an install
+// into Exposely's data dir.
+var copyDirSkip = map[string]bool{
+	"tmp":       true,
+	"temp":      true,
+	"node_modules": true,
+	".git":      true,
+}
+
+// CopyDir recursively copies a directory tree. Existing files in dst
+// are overwritten; directories are merged. Symlinks are copied as
+// files (read through), which is fine for phpMyAdmin's layout.
+func CopyDir(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source is not a directory: %s", src)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() {
+			if copyDirSkip[strings.ToLower(name)] {
+				continue
+			}
+			if err := CopyDir(filepath.Join(src, name), filepath.Join(dst, name)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := copyFile(filepath.Join(src, name), filepath.Join(dst, name)); err != nil {
+			// A source file locked by a running process should not fail
+			// the whole copy; phpMyAdmin works without e.g. a busy log.
+			continue
+		}
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
 }
 
 func itoa(n int) string {
