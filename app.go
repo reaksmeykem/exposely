@@ -99,6 +99,8 @@ func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
 
 	if strings.TrimSpace(stack.NginxBinaryPath) != "" {
 		nginxRoot := filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath))
+		// Base site (localhost) + every registered project vhost so a
+		// plain stack start serves all known projects.
 		sites := []stacks.SiteConfig{{
 			ServerName: "localhost",
 			Root:       filepath.Join(a.appDataDir, "stacks", "www"),
@@ -107,6 +109,18 @@ func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
 			PHPPort:    stack.EffectivePHPPort(),
 			Index:      []string{"index.html", "index.php"},
 		}}
+		registry := stacks.LoadSiteRegistry(a.appDataDir)
+		usePHP := strings.TrimSpace(stack.PHPCGIBinaryPath) != ""
+		for _, entry := range registry.Sites {
+			sites = append(sites, stacks.SiteConfig{
+				ServerName: entry.ServerName,
+				Root:       entry.Root,
+				PHP:        usePHP && entry.PHP,
+				PHPPort:    stack.EffectivePHPPort(),
+				ListenPort: stack.EffectiveNginxPort(),
+				Index:      []string{"index.html", "index.php"},
+			})
+		}
 		confPath, err := a.stackNginxConfPath()
 		if err == nil {
 			conf := stacks.RenderNginxConf(nginxRoot, stack.EffectiveNginxPort(), sites)
@@ -1740,14 +1754,159 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 	}
 	a.stopProjectCommand()
 	stack := a.localStackInfo()
-	originServiceURL, err := a.resolveReachableOriginServiceURL(project, settingsValue.DefaultServiceURL, stack, settingsValue.InsecureSkipOriginTLS)
-	if err != nil {
-		return models.AppState{}, err
+	var originServiceURL string
+	// When the Exposely-managed stack (nginx + php-cgi) is configured,
+	// register the project's vhost with it and route the tunnel through
+	// our own nginx. This makes Exposely self-sufficient: no EnvKit /
+	// Herd / Laragon needed to serve *.test sites. Registration is
+	// best-effort — if the stack is not configured we fall through to
+	// the pre-existing origin resolution (detected stacks, dev-server
+	// fallback, etc.).
+	if managedOrigin, managed := a.ensureManagedVHost(project, settingsValue); managed {
+		originServiceURL = managedOrigin
+		stack = localstack.Info{Detected: false}
+	} else {
+		var resolveErr error
+		originServiceURL, resolveErr = a.resolveReachableOriginServiceURL(project, settingsValue.DefaultServiceURL, stack, settingsValue.InsecureSkipOriginTLS)
+		if resolveErr != nil {
+			return models.AppState{}, resolveErr
+		}
 	}
 	if err := a.manager.StartQuickTunnel(path, originServiceURL, project.LocalHost, cloudflare.QuickTunnelOptions{InsecureSkipOriginTLS: settingsValue.InsecureSkipOriginTLS}); err != nil {
 		return models.AppState{}, err
 	}
 	return a.RefreshState()
+}
+
+// ensureManagedVHost registers a quick-mode project with the
+// Exposely-managed nginx so the site is served locally, and returns the
+// origin URL the tunnel should use (http://127.0.0.1:<nginxPort>).
+//
+// It reports managed=false when the stack feature is not configured
+// (no nginx binary) so callers keep the legacy behaviour untouched.
+//
+// Steps:
+//  1. Verify nginx (and php-cgi for PHP sites) binaries are configured.
+//  2. Resolve the document root (<project>/public for Laravel, folder
+//     for static).
+//  3. Persist the vhost in sites.json.
+//  4. Regenerate nginx.conf from the registry (all sites) and reload
+//     the running nginx; if it is not running yet, start it.
+//  5. Make sure php-cgi is running for PHP sites.
+//  6. Wait until the port answers before declaring success.
+func (a *App) ensureManagedVHost(project models.ProjectPreset, settingsValue models.AppSettings) (string, bool) {
+	stackCfg := settingsValue.Stack
+	nginxPath := strings.TrimSpace(stackCfg.NginxBinaryPath)
+	if nginxPath == "" || project.LocalHost == "" {
+		return "", false
+	}
+	host := strings.ToLower(strings.TrimSpace(project.LocalHost))
+	projectDir, err := a.resolveProjectDirectory(project.ProjectPath)
+	if err != nil {
+		return "", false
+	}
+
+	root := stacks.ResolveProjectRoot(projectDir)
+	usePHP := strings.TrimSpace(stackCfg.PHPCGIBinaryPath) != "" && stacks.IsPHPSite(root)
+
+	// 3. Persist vhost registration so nginx.conf regenerations (next
+	// stack start, other projects) keep serving this site.
+	registry := stacks.LoadSiteRegistry(a.appDataDir)
+	if err := registry.Upsert(stacks.SiteEntry{
+		ServerName:  host,
+		ProjectPath: projectDir,
+		Root:        root,
+		PHP:         usePHP,
+	}); err != nil {
+		a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: "Could not save site registration: " + err.Error()})
+		return "", false
+	}
+
+	// 4. Regenerate the conf from the full registry and apply it.
+	if err := a.regenerateManagedNginxConf(settingsValue, registry); err != nil {
+		a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: "Could not regenerate nginx conf: " + err.Error()})
+		return "", false
+	}
+
+	// 5. PHP sites need php-cgi up before nginx can serve them.
+	if usePHP {
+		a.applyStackConfigs(settingsValue)
+		if st := a.stacks.Status(stacks.ServicePHP); !st.Running {
+			if st := a.stacks.Start(stacks.ServicePHP); !st.Running && st.LastError != "" {
+				a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: "php-cgi failed to start: " + st.LastError})
+				return "", false
+			}
+		}
+	}
+
+	// 4b. Apply the new conf: reload the running nginx, or start it.
+	a.applyStackConfigs(settingsValue)
+	nginxRoot := filepath.Dir(nginxPath)
+	confPath, err := a.stackNginxConfPath()
+	if err != nil {
+		return "", false
+	}
+	if st := a.stacks.Status(stacks.ServiceNginx); st.Running {
+		if err := stacks.NginxConfigTest(nginxPath, nginxRoot, confPath); err != nil {
+			a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: err.Error()})
+			return "", false
+		}
+		if err := stacks.ReloadNginx(nginxPath, nginxRoot, confPath); err != nil {
+			a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: err.Error()})
+			return "", false
+		}
+	} else {
+		if st := a.stacks.Start(stacks.ServiceNginx); !st.Running && st.LastError != "" {
+			a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: "nginx failed to start: " + st.LastError})
+			return "", false
+		}
+	}
+
+	// 6. Wait for the port, then hand the tunnel our origin.
+	port := stackCfg.EffectiveNginxPort()
+	if err := stacks.WaitForPort("127.0.0.1", port, 5*time.Second); err != nil {
+		a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: err.Error()})
+		return "", false
+	}
+	origin := fmt.Sprintf("http://127.0.0.1:%d", port)
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "success",
+		Message:   fmt.Sprintf("Serving %s from %s on %s via the Exposely-managed nginx", host, root, origin),
+	})
+	return origin, true
+}
+
+// regenerateManagedNginxConf writes nginx.conf covering every
+// registered site (not just the current project) so a reload never
+// drops other projects' vhosts.
+func (a *App) regenerateManagedNginxConf(settingsValue models.AppSettings, registry *stacks.SiteRegistry) error {
+	stackCfg := settingsValue.Stack
+	nginxPath := strings.TrimSpace(stackCfg.NginxBinaryPath)
+	if nginxPath == "" {
+		return errors.New("nginx binary not configured")
+	}
+	nginxRoot := filepath.Dir(nginxPath)
+	confPath, err := a.stackNginxConfPath()
+	if err != nil {
+		return err
+	}
+
+	usePHP := strings.TrimSpace(stackCfg.PHPCGIBinaryPath) != ""
+	sites := make([]stacks.SiteConfig, 0, len(registry.Sites)+1)
+	for _, entry := range registry.Sites {
+		sites = append(sites, stacks.SiteConfig{
+			ServerName: entry.ServerName,
+			Root:       entry.Root,
+			PHP:        usePHP && entry.PHP,
+			PHPPort:    stackCfg.EffectivePHPPort(),
+			ListenPort: stackCfg.EffectiveNginxPort(),
+			Index:      []string{"index.html", "index.php"},
+		})
+	}
+	conf := stacks.RenderNginxConf(nginxRoot, stackCfg.EffectiveNginxPort(), sites)
+	return stacks.WriteFile(confPath, conf)
 }
 
 func (a *App) managedCloudflaredPath() string {
