@@ -98,18 +98,22 @@ func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
 	stack := settingsValue.Stack
 
 	if strings.TrimSpace(stack.NginxBinaryPath) != "" {
+		nginxRoot := filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath))
 		sites := []stacks.SiteConfig{{
 			ServerName: "localhost",
-			Root:       filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath)),
+			Root:       filepath.Join(a.appDataDir, "stacks", "www"),
 			ListenPort: stack.EffectiveNginxPort(),
+			PHP:        strings.TrimSpace(stack.PHPCGIBinaryPath) != "",
+			PHPPort:    stack.EffectivePHPPort(),
 			Index:      []string{"index.html", "index.php"},
 		}}
-		if confPath, err := a.stackNginxConfPath(); err == nil {
-			conf := stacks.RenderNginxConf(filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath)), stack.EffectiveNginxPort(), sites)
+		confPath, err := a.stackNginxConfPath()
+		if err == nil {
+			conf := stacks.RenderNginxConf(nginxRoot, stack.EffectiveNginxPort(), sites)
 			if writeErr := stacks.WriteFile(confPath, conf); writeErr == nil {
 				a.stacks.SetConfig(stacks.ServiceNginx, stacks.ServiceConfig{
 					BinaryPath: stack.NginxBinaryPath,
-					Args:       []string{"-p", filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath)), "-c", confPath},
+					Args:       []string{"-p", nginxRoot, "-c", confPath},
 				})
 			}
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -35,10 +36,15 @@ func (c *cliStackRunner) applyConfigs(settingsValue models.AppSettings) {
 	if strings.TrimSpace(stack.NginxBinaryPath) != "" {
 		nginxRoot := filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath))
 		confPath := filepath.Join(c.appDataDir, "stacks", "nginx", "nginx.conf")
+		// The default managed site serves the Exposely webroot with PHP
+		// enabled whenever a php-cgi binary is configured. Project-specific
+		// roots come later via per-project site generation.
 		sites := []stacks.SiteConfig{{
 			ServerName: "localhost",
-			Root:       nginxRoot,
+			Root:       filepath.Join(c.appDataDir, "stacks", "www"),
 			ListenPort: stack.EffectiveNginxPort(),
+			PHP:        strings.TrimSpace(stack.PHPCGIBinaryPath) != "",
+			PHPPort:    stack.EffectivePHPPort(),
 			Index:      []string{"index.html", "index.php"},
 		}}
 		conf := stacks.RenderNginxConf(nginxRoot, stack.EffectiveNginxPort(), sites)
@@ -91,12 +97,22 @@ func (c *cliStackRunner) startService(name string) error {
 		return fmt.Errorf("unknown service %q (use nginx, php, or mysql)", name)
 	}
 
+	// Already running from a previous CLI invocation? The in-memory
+	// Manager is fresh every run, so consult the PID file.
+	if pid := stacks.LoadPID(c.appDataDir, normalized); stacks.ProcessAlive(pid) {
+		fmt.Printf("%s already running (pid %d)\n", normalized, pid)
+		return nil
+	}
+
 	status := c.manager.Start(normalized)
 	if !status.Running {
 		if status.LastError != "" {
 			return errors.New(status.LastError)
 		}
 		return fmt.Errorf("failed to start %s", name)
+	}
+	if err := stacks.SavePID(c.appDataDir, normalized, status.PID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not persist pid for %s: %v\n", normalized, err)
 	}
 	fmt.Printf("%s started (pid %d)\n", normalized, status.PID)
 	return nil
@@ -117,8 +133,25 @@ func (c *cliStackRunner) startAll() error {
 }
 
 func (c *cliStackRunner) stopAll() {
-	c.manager.StopAll()
-	fmt.Println("Managed stack services stopped (nginx, php, mysql).")
+	stoppedAny := false
+	for _, service := range []stacks.Service{stacks.ServiceNginx, stacks.ServicePHP, stacks.ServiceMySQL} {
+		// Stop in-memory tracked processes first (desktop-app flow),
+		// then any process recorded in a PID file by an earlier CLI run.
+		c.manager.Stop(service)
+		pid := stacks.LoadPID(c.appDataDir, service)
+		if stacks.ProcessAlive(pid) {
+			if err := stacks.KillPID(pid); err == nil {
+				stoppedAny = true
+				fmt.Printf("%s stopped (pid %d)\n", service, pid)
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: could not stop %s (pid %d): %v\n", service, pid, err)
+			}
+		}
+		stacks.ClearPID(c.appDataDir, service)
+	}
+	if !stoppedAny {
+		fmt.Println("Managed stack services stopped (nginx, php, mysql).")
+	}
 }
 
 func (c *cliStackRunner) printStatus() {
@@ -126,6 +159,10 @@ func (c *cliStackRunner) printStatus() {
 		state := "stopped"
 		if st.Running {
 			state = fmt.Sprintf("running (pid %d)", st.PID)
+		} else if pid := stacks.LoadPID(c.appDataDir, st.Service); stacks.ProcessAlive(pid) {
+			// Started by a previous CLI run: the in-memory manager does
+			// not know about it, but the PID file does.
+			state = fmt.Sprintf("running (pid %d, from previous run)", pid)
 		}
 		line := fmt.Sprintf("%-6s %s", st.Service, state)
 		if st.LastError != "" {

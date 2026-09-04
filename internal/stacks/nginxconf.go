@@ -48,24 +48,25 @@ func RenderNginxConf(nginxRoot string, listenPort int, sites []SiteConfig) strin
 
 	if len(sites) == 0 {
 		// Always emit at least one server so nginx does not fail to
-		// start with zero server blocks.
+		// start with zero server blocks. Serve from the install's
+		// bundled html/ dir, matching stock nginx behaviour.
 		sites = []SiteConfig{{
 			ServerName: "localhost",
-			Root:       nginxRoot,
+			Root:       filepath.Join(nginxRoot, "html"),
 			ListenPort: listenPort,
 			Index:      []string{"index.html"},
 		}}
 	}
 
 	for _, site := range sites {
-		writeServerBlock(&b, site)
+		writeServerBlock(&b, site, nginxRoot)
 	}
 
 	b.WriteString("}\n")
 	return b.String()
 }
 
-func writeServerBlock(b *strings.Builder, site SiteConfig) {
+func writeServerBlock(b *strings.Builder, site SiteConfig, nginxRoot string) {
 	listen := site.ListenPort
 	if listen <= 0 {
 		listen = 8090
@@ -94,7 +95,12 @@ func writeServerBlock(b *strings.Builder, site SiteConfig) {
 		fmt.Fprintf(b, "            fastcgi_pass   127.0.0.1:%d;\n", site.PHPPort)
 		fmt.Fprintf(b, "            fastcgi_index  index.php;\n")
 		fmt.Fprintf(b, "            fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;\n")
-		fmt.Fprintf(b, "            include        fastcgi_params;\n")
+		// `include fastcgi_params;` resolves relative to the -p prefix,
+		// not the conf file directory, so it breaks when the generated
+		// conf lives outside the nginx install (our case). Always emit
+		// the absolute path from the install's conf dir instead.
+		fastcgiParams := filepath.Join(nginxRoot, "conf", "fastcgi_params")
+		fmt.Fprintf(b, "            include        %s;\n", quotePath(fastcgiParams))
 		fmt.Fprintf(b, "        }\n")
 	}
 

@@ -27,10 +27,13 @@ type MySQLDefaults struct {
 	RootPassword string
 }
 
-// EnsureMySQLDataDir initialises a fresh MySQL data directory when one
-// does not exist yet. It shells out to `mysqld --initialize-insecure`
-// which creates the system tables without a root password (appropriate
-// for a loopback-only dev instance).
+// EnsureMySQLDataDir initialises a fresh data directory when one does
+// not exist yet. It supports both Oracle MySQL and MariaDB:
+//
+//   - MySQL: `mysqld --initialize-insecure --datadir=...`
+//   - MariaDB (ships with Laragon / EnvKit and does not implement
+//     --initialize): `mysql_install_db.exe --datadir=...` from the
+//     same bin directory.
 //
 // It is idempotent: when the data dir already contains a `mysql` system
 // schema directory the call is a no-op and returns nil.
@@ -42,8 +45,8 @@ func EnsureMySQLDataDir(mysqldPath, dataDir string) error {
 		return fmt.Errorf("mysql data dir is empty")
 	}
 
-	// Already initialised? mysqld --initialize creates a `mysql` schema
-	// directory plus ibdata files; the schema dir is the reliable marker.
+	// Already initialised? The server creates a `mysql` schema directory
+	// plus ibdata files; the schema dir is the reliable marker.
 	if _, err := os.Stat(filepath.Join(dataDir, "mysql")); err == nil {
 		return nil
 	}
@@ -51,10 +54,25 @@ func EnsureMySQLDataDir(mysqldPath, dataDir string) error {
 		return err
 	}
 
-	cmd := exec.Command(mysqldPath,
-		"--initialize-insecure",
-		"--datadir="+forwardSlashes(dataDir),
-	)
+	datadirFlag := "--datadir=" + forwardSlashes(dataDir)
+	binDir := filepath.Dir(mysqldPath)
+	installer := filepath.Join(binDir, "mysql_install_db.exe")
+	if _, err := os.Stat(installer); err == nil {
+		// MariaDB on Windows. --password empty = root with no password,
+		// matching MySQL's --initialize-insecure behaviour.
+		cmd := exec.Command(installer, datadirFlag, "--password=")
+		cmd.SysProcAttr = sysproc.Hidden()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("mysql_install_db failed: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+
+	// Oracle MySQL. --no-defaults stops mysqld from reading a my.ini that
+	// belongs to another install (EnvKit / Laragon) and pointing our new
+	// data dir at the wrong basedir.
+	cmd := exec.Command(mysqldPath, "--no-defaults", "--initialize-insecure", datadirFlag)
 	cmd.SysProcAttr = sysproc.Hidden()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
