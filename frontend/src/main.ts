@@ -685,6 +685,10 @@ function render() {
               <span>Stack</span>
               <span class="stack-toggle-badge">${stackRunningCount}/${stackTotalCount}</span>
             </button>
+            <button type="button" class="stack-toggle" data-action="open-database-manager" title="${t('dbManagerTitle')}" ${!stackConfigured ? 'disabled' : ''}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+              <span>${t('dbManager')}</span>
+            </button>
             <button type="button" class="icon-switch" data-action="toggle-theme" aria-label="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}" title="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}">
               ${themeIcon(nextTheme())}
             </button>
@@ -1344,6 +1348,13 @@ async function handleAction(action: string, id: string | null) {
       syncEditorFromForm();
       state.editorProject.subdomain = randomSubdomainValue();
       render();
+      return;
+    }
+    case 'open-database-manager': {
+      const next = await withAction(t('dbManagerOpening'), () => api.openDatabaseManager());
+      if (next) {
+        setNotice('success', `${t('dbManagerOpened')}: ${next}`);
+      }
       return;
     }
     case 'stack-toggle-all': {

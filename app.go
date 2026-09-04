@@ -99,18 +99,28 @@ func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
 
 	if strings.TrimSpace(stack.NginxBinaryPath) != "" {
 		nginxRoot := filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath))
-		// Base site (localhost) + every registered project vhost so a
-		// plain stack start serves all known projects.
-		sites := []stacks.SiteConfig{{
-			ServerName: "localhost",
-			Root:       filepath.Join(a.appDataDir, "stacks", "www"),
-			ListenPort: stack.EffectiveNginxPort(),
-			PHP:        strings.TrimSpace(stack.PHPCGIBinaryPath) != "",
-			PHPPort:    stack.EffectivePHPPort(),
-			Index:      []string{"index.html", "index.php"},
-		}}
+		// Every registered project vhost; the default www site only when
+		// nothing in the registry claims localhost (nginx routes on the
+		// first matching server block).
 		registry := stacks.LoadSiteRegistry(a.appDataDir)
 		usePHP := strings.TrimSpace(stack.PHPCGIBinaryPath) != ""
+		sites := make([]stacks.SiteConfig, 0, len(registry.Sites)+1)
+		hasLocalhost := false
+		for _, entry := range registry.Sites {
+			if strings.EqualFold(entry.ServerName, "localhost") {
+				hasLocalhost = true
+			}
+		}
+		if !hasLocalhost {
+			sites = append(sites, stacks.SiteConfig{
+				ServerName: "localhost",
+				Root:       filepath.Join(a.appDataDir, "stacks", "www"),
+				ListenPort: stack.EffectiveNginxPort(),
+				PHP:        usePHP,
+				PHPPort:    stack.EffectivePHPPort(),
+				Index:      []string{"index.html", "index.php"},
+			})
+		}
 		for _, entry := range registry.Sites {
 			sites = append(sites, stacks.SiteConfig{
 				ServerName: entry.ServerName,
@@ -1907,6 +1917,107 @@ func (a *App) regenerateManagedNginxConf(settingsValue models.AppSettings, regis
 	}
 	conf := stacks.RenderNginxConf(nginxRoot, stackCfg.EffectiveNginxPort(), sites)
 	return stacks.WriteFile(confPath, conf)
+}
+
+// OpenDatabaseManager makes phpMyAdmin reachable through the
+// Exposely-managed nginx and opens it in the user's browser.
+//
+// Flow:
+//  1. Require a configured managed stack (nginx binary) — the database
+//     manager is part of the stack feature.
+//  2. Locate a local phpMyAdmin install (EnvKit / Laragon / XAMPP /
+//     manual). Never downloaded.
+//  3. Register it as a localhost/phpmyadmin.test vhost, write a
+//     config.user.inc.php pointing at the managed MariaDB, regenerate
+//     + apply the nginx conf, and ensure the stack (php-cgi, mysql,
+//     nginx) is running.
+//  4. Open http://127.0.0.1:<nginxPort>/index.php in the browser.
+//
+// The manager is local-only by design: phpMyAdmin on a public tunnel
+// URL would expose the database to the internet.
+func (a *App) OpenDatabaseManager() (string, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return "", err
+	}
+	stackCfg := settingsValue.Stack
+	nginxPath := strings.TrimSpace(stackCfg.NginxBinaryPath)
+	if nginxPath == "" {
+		return "", errors.New("the managed stack is not configured. Set the nginx binary path in Settings → Managed stack first")
+	}
+
+	pmaDir, ok := stacks.DetectPhpMyAdmin()
+	if !ok {
+		return "", errors.New("phpMyAdmin was not found on this machine. Install it (or use EnvKit/Laragon/XAMPP which bundle it) and try again")
+	}
+
+	// Register/refresh the phpMyAdmin vhost.
+	registry := stacks.LoadSiteRegistry(a.appDataDir)
+	if err := registry.Upsert(stacks.SiteEntry{
+		ServerName:  "localhost",
+		ProjectPath: pmaDir,
+		Root:        pmaDir,
+		PHP:         true,
+	}); err != nil {
+		return "", fmt.Errorf("could not register phpMyAdmin: %w", err)
+	}
+
+	// Point phpMyAdmin at the managed MariaDB.
+	configSrc := stacks.PhpMyAdminServerConfig("127.0.0.1", stackCfg.EffectiveMySQLPort())
+	_ = stacks.WriteFile(filepath.Join(pmaDir, "config.user.inc.php"), configSrc)
+
+	// Regenerate the conf (registry-based) and bring the stack up.
+	if err := a.regenerateManagedNginxConf(settingsValue, registry); err != nil {
+		return "", err
+	}
+	a.applyStackConfigs(settingsValue)
+
+	// Ensure the services phpMyAdmin needs are running: mysql (its
+	// target), php (its runtime), nginx (its front door).
+	for _, service := range []stacks.Service{stacks.ServiceMySQL, stacks.ServicePHP, stacks.ServiceNginx} {
+		if st := a.stacks.Status(service); !st.Running {
+			if strings.TrimSpace(a.stacksConfiguredBinary(settingsValue, service)) == "" {
+				continue // service not configured; skip silently
+			}
+			if st := a.stacks.Start(service); !st.Running && st.LastError != "" {
+				return "", fmt.Errorf("%s failed to start: %s", service, st.LastError)
+			}
+		}
+	}
+
+	port := stackCfg.EffectiveNginxPort()
+	if err := stacks.WaitForPort("127.0.0.1", port, 5*time.Second); err != nil {
+		return "", err
+	}
+
+	// Host header must be "localhost" to match the phpMyAdmin vhost
+	// (127.0.0.1 falls through to the default server block instead).
+	url := fmt.Sprintf("http://localhost:%d/index.php", port)
+	if err := openExternal(url); err != nil {
+		return "", err
+	}
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "success",
+		Message:   "phpMyAdmin opened at " + url + " (managing MariaDB on 127.0.0.1:" + fmt.Sprint(stackCfg.EffectiveMySQLPort()) + ")",
+	})
+	return url, nil
+}
+
+// stacksConfiguredBinary returns the configured binary path for a
+// service under the supplied settings, or "" when not configured.
+func (a *App) stacksConfiguredBinary(settingsValue models.AppSettings, service stacks.Service) string {
+	stackCfg := settingsValue.Stack
+	switch service {
+	case stacks.ServiceNginx:
+		return strings.TrimSpace(stackCfg.NginxBinaryPath)
+	case stacks.ServicePHP:
+		return strings.TrimSpace(stackCfg.PHPCGIBinaryPath)
+	case stacks.ServiceMySQL:
+		return strings.TrimSpace(stackCfg.MySQLDBinaryPath)
+	}
+	return ""
 }
 
 func (a *App) managedCloudflaredPath() string {

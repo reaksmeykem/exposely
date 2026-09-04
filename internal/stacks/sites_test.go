@@ -1,4 +1,4 @@
-package stacks
+﻿package stacks
 
 import (
 	"os"
@@ -119,4 +119,20 @@ func TestRenderNginxConfMultipleVHostsSamePort(t *testing.T) {
 	if !strings.Contains(conf, "server_name  a.test;") || !strings.Contains(conf, "server_name  b.test;") {
 		t.Fatalf("both vhosts must be present:\n%s", conf)
 	}
+}
+
+func TestPhpMyAdminServerConfig(t *testing.T) {
+	conf := PhpMyAdminServerConfig("127.0.0.1", 3306)
+	for _, want := range []string{"'127.0.0.1'", "'3306'", "AllowNoPassword"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("config missing %q:\n%s", want, conf)
+		}
+	}
+}
+
+func TestDetectPhpMyAdminNotFoundInCleanEnv(t *testing.T) {
+	// On CI machines without any phpMyAdmin this must return false, not
+	// panic. On the dev machine with EnvKit it may legitimately find one;
+	// both outcomes are acceptable - the contract is "no panic".
+	_, _ = DetectPhpMyAdmin()
 }

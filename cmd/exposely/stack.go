@@ -4,12 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/reaksmeykem/exposely/internal/models"
 	"github.com/reaksmeykem/exposely/internal/settings"
 	"github.com/reaksmeykem/exposely/internal/stacks"
+	"github.com/reaksmeykem/exposely/internal/sysproc"
 )
 
 // cliStackRunner is a slim wrapper giving the CLI access to the same
@@ -36,17 +39,41 @@ func (c *cliStackRunner) applyConfigs(settingsValue models.AppSettings) {
 	if strings.TrimSpace(stack.NginxBinaryPath) != "" {
 		nginxRoot := filepath.Dir(strings.TrimSpace(stack.NginxBinaryPath))
 		confPath := filepath.Join(c.appDataDir, "stacks", "nginx", "nginx.conf")
-		// The default managed site serves the Exposely webroot with PHP
-		// enabled whenever a php-cgi binary is configured. Project-specific
-		// roots come later via per-project site generation.
-		sites := []stacks.SiteConfig{{
-			ServerName: "localhost",
-			Root:       filepath.Join(c.appDataDir, "stacks", "www"),
-			ListenPort: stack.EffectiveNginxPort(),
-			PHP:        strings.TrimSpace(stack.PHPCGIBinaryPath) != "",
-			PHPPort:    stack.EffectivePHPPort(),
-			Index:      []string{"index.html", "index.php"},
-		}}
+		// Base site + every registered project vhost, matching the
+		// desktop app, so regenerating the conf never drops vhosts.
+		usePHP := strings.TrimSpace(stack.PHPCGIBinaryPath) != ""
+		var sites []stacks.SiteConfig
+		registry := stacks.LoadSiteRegistry(c.appDataDir)
+		// The registry owns the "localhost" vhost when phpMyAdmin (or any
+		// explicit entry) claims it; only add the default www site when
+		// nothing else is bound to localhost, since nginx routes on the
+		// first matching server block.
+		hasLocalhost := false
+		for _, entry := range registry.Sites {
+			if strings.EqualFold(entry.ServerName, "localhost") {
+				hasLocalhost = true
+			}
+		}
+		if !hasLocalhost {
+			sites = append(sites, stacks.SiteConfig{
+				ServerName: "localhost",
+				Root:       filepath.Join(c.appDataDir, "stacks", "www"),
+				ListenPort: stack.EffectiveNginxPort(),
+				PHP:        usePHP,
+				PHPPort:    stack.EffectivePHPPort(),
+				Index:      []string{"index.html", "index.php"},
+			})
+		}
+		for _, entry := range registry.Sites {
+			sites = append(sites, stacks.SiteConfig{
+				ServerName: entry.ServerName,
+				Root:       entry.Root,
+				PHP:        usePHP && entry.PHP,
+				PHPPort:    stack.EffectivePHPPort(),
+				ListenPort: stack.EffectiveNginxPort(),
+				Index:      []string{"index.html", "index.php"},
+			})
+		}
 		conf := stacks.RenderNginxConf(nginxRoot, stack.EffectiveNginxPort(), sites)
 		if err := stacks.WriteFile(confPath, conf); err == nil {
 			c.manager.SetConfig(stacks.ServiceNginx, stacks.ServiceConfig{
@@ -154,8 +181,78 @@ func (c *cliStackRunner) stopAll() {
 	}
 }
 
-func (c *cliStackRunner) printStatus() {
-	for _, st := range c.manager.AllStatus() {
+// openDatabaseManager registers phpMyAdmin as a localhost vhost on the
+// managed nginx, ensures the stack is running, and opens the browser.
+// Mirrors the desktop app's OpenDatabaseManager flow without Wails.
+func (c *cliStackRunner) openDatabaseManager() (string, error) {
+	settingsValue, err := c.store.Load()
+	if err != nil {
+		return "", err
+	}
+	stackCfg := settingsValue.Stack
+	nginxPath := strings.TrimSpace(stackCfg.NginxBinaryPath)
+	if nginxPath == "" {
+		return "", errors.New("the managed stack is not configured (set stack.nginxBinaryPath in settings.json)")
+	}
+	pmaDir, ok := stacks.DetectPhpMyAdmin()
+	if !ok {
+		return "", errors.New("phpMyAdmin was not found on this machine. Install it (or use EnvKit/Laragon/XAMPP which bundle it) and try again")
+	}
+
+	registry := stacks.LoadSiteRegistry(c.appDataDir)
+	if err := registry.Upsert(stacks.SiteEntry{
+		ServerName:  "localhost",
+		ProjectPath: pmaDir,
+		Root:        pmaDir,
+		PHP:         true,
+	}); err != nil {
+		return "", fmt.Errorf("could not register phpMyAdmin: %w", err)
+	}
+	_ = stacks.WriteFile(filepath.Join(pmaDir, "config.user.inc.php"), stacks.PhpMyAdminServerConfig("127.0.0.1", stackCfg.EffectiveMySQLPort()))
+
+	// applyConfigs regenerates the conf from the registry (including the
+	// phpMyAdmin entry just upserted) and configures the services.
+	c.applyConfigs(settingsValue)
+
+	if err := c.startService("mysql"); err != nil {
+		return "", err
+	}
+	if err := c.startService("php"); err != nil {
+		return "", err
+	}
+	// nginx: reload when our instance is already running, else start.
+	if pid := stacks.LoadPID(c.appDataDir, stacks.ServiceNginx); stacks.ProcessAlive(pid) {
+		nginxRoot := filepath.Dir(nginxPath)
+		confPath := filepath.Join(c.appDataDir, "stacks", "nginx", "nginx.conf")
+		if err := stacks.NginxConfigTest(nginxPath, nginxRoot, confPath); err != nil {
+			return "", err
+		}
+		if err := stacks.ReloadNginx(nginxPath, nginxRoot, confPath); err != nil {
+			return "", err
+		}
+	} else if err := c.startService("nginx"); err != nil {
+		return "", err
+	}
+
+	port := stackCfg.EffectiveNginxPort()
+	if err := stacks.WaitForPort("127.0.0.1", port, 5*time.Second); err != nil {
+		return "", err
+	}
+	// Host header must be "localhost" to match the phpMyAdmin vhost.
+	url := fmt.Sprintf("http://localhost:%d/index.php", port)
+	if err := openBrowser(url); err != nil {
+		return "", err
+	}
+	return url, nil
+}
+
+func openBrowser(target string) error {
+	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	cmd.SysProcAttr = sysproc.Hidden()
+	return cmd.Start()
+}
+
+func (c *cliStackRunner) printStatus() {	for _, st := range c.manager.AllStatus() {
 		state := "stopped"
 		if st.Running {
 			state = fmt.Sprintf("running (pid %d)", st.PID)
@@ -193,6 +290,13 @@ func runStackCommand(r *cliRunner, args []string) error {
 	case "status":
 		stack.printStatus()
 		return nil
+	case "db":
+		url, err := stack.openDatabaseManager()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("phpMyAdmin opened: %s\n", url)
+		return nil
 	case "help", "-h", "--help":
 		printStackUsage()
 		return nil
@@ -210,6 +314,7 @@ Usage:
   exposely stack start nginx    start one service (nginx|php|mysql)
   exposely stack stop           stop all managed services
   exposely stack status         show per-service state
+  exposely stack db             open phpMyAdmin for the managed database
 
 Configure binary paths in the desktop app Settings tab or edit
 %AppData%\Exposely\settings.json:

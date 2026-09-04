@@ -45,4 +45,5 @@ export const api = {
   startStack: (): Promise<AppState> => (appBinding() as AppBindings & { StartStack(): Promise<AppState> }).StartStack(),
   stopStack: (): Promise<AppState> => (appBinding() as AppBindings & { StopStack(): Promise<AppState> }).StopStack(),
   stackStatus: (): Promise<StackServiceStatus[]> => (appBinding() as AppBindings & { StackStatus(): Promise<StackServiceStatus[]> }).StackStatus(),
+  openDatabaseManager: (): Promise<string> => (appBinding() as AppBindings & { OpenDatabaseManager(): Promise<string> }).OpenDatabaseManager(),
 };
