@@ -297,6 +297,22 @@ func runStackCommand(r *cliRunner, args []string) error {
 		}
 		fmt.Printf("phpMyAdmin opened: %s\n", url)
 		return nil
+	case "php-install":
+		settingsValue, err := stack.store.Load()
+		if err != nil {
+			return err
+		}
+		dir, iniPath, err := stacks.InstallPHP(stack.appDataDir)
+		if err != nil {
+			return err
+		}
+		settingsValue.Stack.UseManagedPHP = true
+		settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
+		if err := stack.store.Save(settingsValue); err != nil {
+			return err
+		}
+		fmt.Printf("PHP installed at %s\nphp.ini: %s\nversion: %s\n", dir, iniPath, stacks.PHPVersionOf(dir))
+		return nil
 	case "help", "-h", "--help":
 		printStackUsage()
 		return nil

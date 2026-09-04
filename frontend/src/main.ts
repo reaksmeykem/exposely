@@ -2,7 +2,7 @@ import './style.css';
 import { api } from './api';
 import { t, setLang, getLang } from './i18n';
 import { WindowCenter, WindowIsMaximised, WindowSetMinSize, WindowSetSize, WindowUnmaximise } from '../wailsjs/runtime/runtime';
-import type { AppState, LogEntry, ProjectPreset, ShareMode, StackServiceStatus, TunnelStatus } from './types';
+import type { AppState, LogEntry, PHPConfigInfo, ProjectPreset, ShareMode, StackServiceStatus, TunnelStatus } from './types';
 
 type NoticeTone = 'info' | 'success' | 'error';
 
@@ -28,6 +28,7 @@ interface UIState {
   licenseDraft: string;
   projectSearch: string;
   stackStatuses: StackServiceStatus[];
+  phpConfig: PHPConfigInfo | null;
   stackDraft: {
     nginxBinaryPath: string;
     phpCgiBinaryPath: string;
@@ -77,6 +78,7 @@ const state: UIState = {
   licenseDraft: '',
   projectSearch: '',
   stackStatuses: [],
+  phpConfig: null,
   stackDraft: blankStackDraft(),
 };
 
@@ -996,6 +998,27 @@ function render() {
                      <div class="metric-grid metric-grid-section">
                        ${stackStatusCards()}
                      </div>
+                     <div class="panel-header" style="margin-top: 8px;">
+                       <div>
+                         <p class="eyebrow">${t('phpSectionTitle')}</p>
+                         <h2>${t('phpSectionSubtitle')}</h2>
+                       </div>
+                       <div class="action-row">
+                         <button type="button" class="secondary" data-action="php-install">${state.phpConfig?.installed ? t('phpReinstall') : t('phpInstall')}</button>
+                       </div>
+                     </div>
+                     <p class="hint" style="margin-top: 4px;">${state.phpConfig?.installed ? `${t('phpInstalledAt')}: ${escapeHtml(state.phpConfig.installDir)} (${escapeHtml(state.phpConfig.version || '?')})` : t('phpNotInstalledHint')}</p>
+                     ${state.phpConfig?.installed ? `
+                     <form id="php-config-form" class="form-grid">
+                       <label>${t('phpMemoryLimit')}<input name="memoryLimit" value="${escapeHtml(state.phpConfig.memoryLimit || '256M')}" placeholder="256M" /></label>
+                       <label>${t('phpUploadMax')}<input name="uploadMax" value="${escapeHtml(state.phpConfig.uploadMax || '64M')}" placeholder="64M" /></label>
+                       <label>${t('phpPostMax')}<input name="postMax" value="${escapeHtml(state.phpConfig.postMax || '64M')}" placeholder="64M" /></label>
+                       <label>${t('phpMaxExecTime')}<input type="number" min="1" max="600" name="maxExecTime" value="${escapeHtml(String(state.phpConfig.maxExecTime || 120))}" /></label>
+                       <label class="wide">${t('phpExtraExtensions')}<input name="extraExts" value="${escapeHtml((state.phpConfig.extraExts || []).join(', '))}" placeholder="soap, xsl, exif" /></label>
+                       <div class="action-row wide"><button type="submit">${t('phpSaveConfig')}</button></div>
+                     </form>
+                     <p class="hint">${t('phpIniPath')}: ${escapeHtml(state.phpConfig.iniPath)}</p>
+                     ` : ''}
                      <p class="hint">${t('stackHint')}</p>
                    </article>
                   `
@@ -1193,6 +1216,28 @@ function bindForms() {
     }
   });
 
+  const phpConfigForm = root.querySelector<HTMLFormElement>('#php-config-form');
+  phpConfigForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const extraExts = formValue(phpConfigForm, 'extraExts')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const next = await withAction(t('phpSaveConfig'), () =>
+      api.savePHPConfig(
+        formValue(phpConfigForm, 'memoryLimit'),
+        formValue(phpConfigForm, 'uploadMax'),
+        formValue(phpConfigForm, 'postMax'),
+        Number(formValue(phpConfigForm, 'maxExecTime')) || 120,
+        extraExts,
+      ));
+    if (next) {
+      state.appState = next;
+      state.phpConfig = await api.getPHPConfig().catch(() => state.phpConfig);
+      setNotice('success', t('phpConfigSaved'));
+    }
+  });
+
   const stackForm = root.querySelector<HTMLFormElement>('#stack-form');
   stackForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1348,6 +1393,15 @@ async function handleAction(action: string, id: string | null) {
       syncEditorFromForm();
       state.editorProject.subdomain = randomSubdomainValue();
       render();
+      return;
+    }
+    case 'php-install': {
+      const next = await withAction(t('phpInstall'), () => api.installManagedPHP());
+      if (next) {
+        state.appState = next;
+        state.phpConfig = await api.getPHPConfig().catch(() => state.phpConfig);
+        setNotice('success', t('phpInstallDone'));
+      }
       return;
     }
     case 'open-database-manager': {
@@ -1720,6 +1774,13 @@ async function bootstrap() {
     render();
   }).catch(() => {
     // Stack status is optional; ignore when bindings are unavailable.
+  });
+
+  void api.getPHPConfig().then((info) => {
+    state.phpConfig = info;
+    render();
+  }).catch(() => {
+    // PHP config panel is optional.
   });
 
   void api.checkForUpdates().then((latest) => {

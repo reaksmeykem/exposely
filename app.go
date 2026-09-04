@@ -1788,6 +1788,107 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 	return a.RefreshState()
 }
 
+// InstallManagedPHP downloads and installs Exposely's own PHP into
+// <appData>/stacks/php with a Laravel-ready php.ini, then points the
+// stack settings at it. Idempotent when already installed.
+func (a *App) InstallManagedPHP() (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "info",
+		Message:   fmt.Sprintf("Installing PHP %s to %s ...", stacks.PHPVersion, stacks.PHPInstallDir(a.appDataDir)),
+	})
+	dir, iniPath, err := stacks.InstallPHP(a.appDataDir)
+	if err != nil {
+		return models.AppState{}, err
+	}
+
+	settingsValue.Stack.UseManagedPHP = true
+	settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
+	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		return models.AppState{}, err
+	}
+	a.applyStackConfigs(settingsValue)
+
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "success",
+		Message:   fmt.Sprintf("PHP %s installed (php.ini: %s)", stacks.PHPVersionOf(dir), iniPath),
+	})
+	return a.RefreshState()
+}
+
+// SavePHPConfig regenerates the managed php.ini from the supplied
+// settings. Only meaningful when UseManagedPHP is on; for a
+// user-supplied PHP path it regenerates nothing and returns a clear
+// error instead of silently editing someone else's install.
+func (a *App) SavePHPConfig(memoryLimit, uploadMaxFilesize, postMaxSize string, maxExecutionTime int, extraExtensions []string) (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	phpDir := strings.TrimSpace(stacks.PHPInstallDir(a.appDataDir))
+	if !settingsValue.Stack.UseManagedPHP || !stacks.PHPInstalled(a.appDataDir) {
+		return models.AppState{}, errors.New("PHP settings apply to the Exposely-managed PHP. Install it first (Install PHP button)")
+	}
+
+	settingsValue.Stack.PHPMemoryLimit = strings.TrimSpace(memoryLimit)
+	settingsValue.Stack.PHPUploadMaxFilesize = strings.TrimSpace(uploadMaxFilesize)
+	settingsValue.Stack.PHPPostMaxSize = strings.TrimSpace(postMaxSize)
+	settingsValue.Stack.PHPMaxExecutionTime = maxExecutionTime
+	settingsValue.Stack.PHPExtraExtensions = extraExtensions
+	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		return models.AppState{}, err
+	}
+
+	s := stacks.PHPIniSettings{
+		MemoryLimit:       settingsValue.Stack.PHPMemoryLimit,
+		UploadMaxFilesize: settingsValue.Stack.PHPUploadMaxFilesize,
+		PostMaxSize:       settingsValue.Stack.PHPPostMaxSize,
+		MaxExecutionTime:  settingsValue.Stack.PHPMaxExecutionTime,
+		ExtraExtensions:   settingsValue.Stack.PHPExtraExtensions,
+	}
+	iniPath := stacks.PhpIniPath(phpDir)
+	if err := stacks.WriteFile(iniPath, stacks.PHPIniTemplateWith(phpDir, s)); err != nil {
+		return models.AppState{}, err
+	}
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "success",
+		Message:   "php.ini updated: " + iniPath + " (restart PHP to apply)",
+	})
+	return a.RefreshState()
+}
+
+// GetPHPConfig returns the current PHP settings + detected version so
+// the UI can render the form.
+func (a *App) GetPHPConfig() map[string]interface{} {
+	settingsValue, err := a.store.Load()
+	result := map[string]interface{}{
+		"installed":     stacks.PHPInstalled(a.appDataDir),
+		"installDir":    stacks.PHPInstallDir(a.appDataDir),
+		"useManagedPHP": settingsValue.Stack.UseManagedPHP,
+		"memoryLimit":   settingsValue.Stack.PHPMemoryLimit,
+		"uploadMax":     settingsValue.Stack.PHPUploadMaxFilesize,
+		"postMax":       settingsValue.Stack.PHPPostMaxSize,
+		"maxExecTime":   settingsValue.Stack.PHPMaxExecutionTime,
+		"extraExts":     settingsValue.Stack.PHPExtraExtensions,
+		"version":       "",
+		"iniPath":       "",
+	}
+	if err == nil && stacks.PHPInstalled(a.appDataDir) {
+		result["version"] = stacks.PHPVersionOf(stacks.PHPInstallDir(a.appDataDir))
+		result["iniPath"] = stacks.PhpIniPath(stacks.PHPInstallDir(a.appDataDir))
+	}
+	return result
+}
+
 // ensureManagedVHost registers a quick-mode project with the
 // Exposely-managed nginx so the site is served locally, and returns the
 // origin URL the tunnel should use (http://127.0.0.1:<nginxPort>).

@@ -45,6 +45,19 @@ export interface StackServiceStatus {
   lastError?: string;
 }
 
+export interface PHPConfigInfo {
+  installed: boolean;
+  installDir: string;
+  useManagedPHP: boolean;
+  memoryLimit: string;
+  uploadMax: string;
+  postMax: string;
+  maxExecTime: number;
+  extraExts: string[];
+  version: string;
+  iniPath: string;
+}
+
 export interface LicenseState {
   valid: boolean;
   isAdmin: boolean;

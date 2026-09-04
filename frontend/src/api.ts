@@ -1,4 +1,4 @@
-import type { AppSettings, AppState, ProjectPreset, StackServiceStatus, TunnelUsage } from './types';
+import type { AppSettings, AppState, PHPConfigInfo, ProjectPreset, StackServiceStatus, TunnelUsage } from './types';
 
 type AppBindings = NonNullable<NonNullable<NonNullable<typeof window.go>['main']>['App']>;
 
@@ -46,4 +46,8 @@ export const api = {
   stopStack: (): Promise<AppState> => (appBinding() as AppBindings & { StopStack(): Promise<AppState> }).StopStack(),
   stackStatus: (): Promise<StackServiceStatus[]> => (appBinding() as AppBindings & { StackStatus(): Promise<StackServiceStatus[]> }).StackStatus(),
   openDatabaseManager: (): Promise<string> => (appBinding() as AppBindings & { OpenDatabaseManager(): Promise<string> }).OpenDatabaseManager(),
+  installManagedPHP: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedPHP(): Promise<AppState> }).InstallManagedPHP(),
+  savePHPConfig: (memoryLimit: string, uploadMax: string, postMax: string, maxExecTime: number, extraExts: string[]): Promise<AppState> =>
+    (appBinding() as AppBindings & { SavePHPConfig(m: string, u: string, p: string, t: number, e: string[]): Promise<AppState> }).SavePHPConfig(memoryLimit, uploadMax, postMax, maxExecTime, extraExts),
+  getPHPConfig: (): Promise<PHPConfigInfo> => (appBinding() as AppBindings & { GetPHPConfig(): Promise<PHPConfigInfo> }).GetPHPConfig(),
 };

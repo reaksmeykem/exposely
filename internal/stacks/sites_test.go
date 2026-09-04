@@ -137,6 +137,61 @@ func TestDetectPhpMyAdminNotFoundInCleanEnv(t *testing.T) {
 	_, _ = DetectPhpMyAdmin()
 }
 
+func TestPHPIniTemplateBaseline(t *testing.T) {
+	phpDir := t.TempDir()
+	// Fake a couple of extension DLLs so the emitted ini enables them.
+	extDir := filepath.Join(phpDir, "ext")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, dll := range []string{"php_curl.dll", "php_mysqli.dll", "php_pdo_mysql.dll", "php_mbstring.dll", "php_openssl.dll"} {
+		if err := os.WriteFile(filepath.Join(extDir, dll), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ini := PHPIniTemplateWith(phpDir, PHPIniSettings{
+		MemoryLimit:       "512M",
+		UploadMaxFilesize: "128M",
+		PostMaxSize:       "128M",
+		MaxExecutionTime:  300,
+		ExtraExtensions:   []string{"soap"},
+	})
+	for _, want := range []string{
+		"memory_limit = 512M",
+		"upload_max_filesize = 128M",
+		"post_max_size = 128M",
+		"max_execution_time = 300",
+		"extension = php_curl.dll",
+		"extension = php_mysqli.dll",
+		// soap DLL absent -> commented out, never active
+		"; extension = php_soap.dll",
+	} {
+		if !strings.Contains(ini, want) {
+			t.Fatalf("php.ini missing %q:\n%s", want, ini)
+		}
+	}
+	if strings.Contains(ini, "\nextension = php_soap.dll") {
+		t.Fatal("missing DLL must not be activated")
+	}
+}
+
+func TestPHPIniTemplateDefaultsWhenEmpty(t *testing.T) {
+	ini := PHPIniTemplate(t.TempDir())
+	for _, want := range []string{"memory_limit = 256M", "upload_max_filesize = 64M", "post_max_size = 64M", "max_execution_time = 120"} {
+		if !strings.Contains(ini, want) {
+			t.Fatalf("defaults missing %q:\n%s", want, ini)
+		}
+	}
+}
+
+func TestPHPVersionOfParses(t *testing.T) {
+	// No PHP in an empty temp dir -> empty string, no panic.
+	if v := PHPVersionOf(t.TempDir()); v != "" {
+		t.Fatalf("expected empty version, got %q", v)
+	}
+}
+
 func TestEnsureOwnedPhpMyAdminCopiesOnce(t *testing.T) {
 	// Build a fake "installed" phpMyAdmin source.
 	source := filepath.Join(t.TempDir(), "pma-src")

@@ -66,6 +66,18 @@ type StackSettings struct {
 	MySQLPort int `json:"mysqlPort,omitempty"`
 	// PHPWorkers controls how many php-cgi workers to spawn (default 4).
 	PHPWorkers int `json:"phpWorkers,omitempty"`
+	// PHPMemoryLimit etc. feed the generated php.ini for the managed
+	// PHP install. Empty strings mean "use defaults".
+	PHPMemoryLimit       string `json:"phpMemoryLimit,omitempty"`
+	PHPUploadMaxFilesize string `json:"phpUploadMaxFilesize,omitempty"`
+	PHPPostMaxSize       string `json:"phpPostMaxSize,omitempty"`
+	PHPMaxExecutionTime  int    `json:"phpMaxExecutionTime,omitempty"`
+	// PHPExtraExtensions lists additional php extensions to enable
+	// (beyond the Laravel baseline), e.g. ["soap","xsl"].
+	PHPExtraExtensions []string `json:"phpExtraExtensions,omitempty"`
+	// UseManagedPHP marks the stack as running Exposely's own PHP
+	// install (<appData>/stacks/php) instead of a user-supplied path.
+	UseManagedPHP bool `json:"useManagedPhp,omitempty"`
 }
 
 func (s StackSettings) EffectiveNginxPort() int {
