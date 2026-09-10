@@ -984,6 +984,7 @@ function render() {
                        <div class="action-row">
                          <button type="button" class="secondary" data-action="stack-start-all">${t('stackStartAll')}</button>
                          <button type="button" class="secondary" data-action="stack-stop-all">${t('stackStopAll')}</button>
+                         <button type="button" class="secondary" data-action="stack-detect" title="${t('stackDetectTitle')}">${t('stackDetect')}</button>
                          <button type="button" class="secondary" data-action="nginx-install" title="${t('nginxInstall')}">${t('nginxInstall')}</button>
                          <button type="button" class="secondary" data-action="mariadb-install" title="${t('mariaDBInstall')}">${t('mariaDBInstall')}</button>
                        </div>
@@ -1419,6 +1420,17 @@ async function handleAction(action: string, id: string | null) {
       if (next) {
         state.appState = next;
         setNotice('success', t('mariaDBInstallDone'));
+      }
+      return;
+    }
+    case 'stack-detect': {
+      const before = `${state.appState?.settings.stack?.nginxBinaryPath ?? ''}|${state.appState?.settings.stack?.phpCgiBinaryPath ?? ''}|${state.appState?.settings.stack?.mysqldBinaryPath ?? ''}`;
+      const next = await withAction(t('stackDetect'), () => api.detectStackBinaries());
+      if (next) {
+        state.appState = next;
+        syncStackDraftFromState(next);
+        const after = `${next.settings.stack?.nginxBinaryPath ?? ''}|${next.settings.stack?.phpCgiBinaryPath ?? ''}|${next.settings.stack?.mysqldBinaryPath ?? ''}`;
+        setNotice(after !== before ? 'success' : 'info', after !== before ? t('stackDetectDone') : t('stackDetectNone'));
       }
       return;
     }

@@ -1836,6 +1836,66 @@ func (a *App) InstallManagedPHP() (models.AppState, error) {
 	return a.RefreshState()
 }
 
+// DetectStackBinaries scans common install locations (Exposely's own
+// managed stacks, EnvKit, Laragon, XAMPP, well-known roots, PATH) and
+// fills in the stack settings for every service whose path is still
+// empty. Paths the user set (or blanked) on purpose are left alone.
+func (a *App) DetectStackBinaries() (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+
+	found := stacks.DetectBinaries(a.appDataDir)
+	filled := []string{}
+
+	if strings.TrimSpace(settingsValue.Stack.NginxBinaryPath) == "" {
+		if p := found[stacks.ServiceNginx]; p != "" {
+			settingsValue.Stack.NginxBinaryPath = p
+			filled = append(filled, "nginx: "+p)
+		}
+	}
+	if strings.TrimSpace(settingsValue.Stack.PHPCGIBinaryPath) == "" {
+		if p := found[stacks.ServicePHP]; p != "" {
+			settingsValue.Stack.PHPCGIBinaryPath = p
+			// PHP config editing only applies to the managed install;
+			// mark it when the detected binary is Exposely's own.
+			if strings.EqualFold(filepath.Dir(filepath.Dir(p)), stacks.PHPInstallDir(a.appDataDir)) {
+				settingsValue.Stack.UseManagedPHP = true
+			}
+			filled = append(filled, "php: "+p)
+		}
+	}
+	if strings.TrimSpace(settingsValue.Stack.MySQLDBinaryPath) == "" {
+		if p := found[stacks.ServiceMySQL]; p != "" {
+			settingsValue.Stack.MySQLDBinaryPath = p
+			filled = append(filled, "mysql: "+p)
+		}
+	}
+
+	if len(filled) == 0 {
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "stack",
+			Level:     "info",
+			Message:   "Auto-detect found nothing new (paths already set or no local stack binaries found)",
+		})
+		return a.RefreshState()
+	}
+
+	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		return models.AppState{}, err
+	}
+	a.applyStackConfigs(settingsValue)
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "success",
+		Message:   "Auto-detected stack binaries: " + strings.Join(filled, "; "),
+	})
+	return a.RefreshState()
+}
+
 // InstallManagedNginx downloads Exposely's own nginx into the app
 // data dir and points the stack settings at it. Idempotent: a second
 // call is a no-op that just re-points the settings (useful after a

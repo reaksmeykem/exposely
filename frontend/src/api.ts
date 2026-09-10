@@ -49,6 +49,7 @@ export const api = {
   installManagedPHP: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedPHP(): Promise<AppState> }).InstallManagedPHP(),
   installManagedNginx: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedNginx(): Promise<AppState> }).InstallManagedNginx(),
   installManagedMariaDB: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedMariaDB(): Promise<AppState> }).InstallManagedMariaDB(),
+  detectStackBinaries: (): Promise<AppState> => (appBinding() as AppBindings & { DetectStackBinaries(): Promise<AppState> }).DetectStackBinaries(),
   savePHPConfig: (memoryLimit: string, uploadMax: string, postMax: string, maxExecTime: number, extraExts: string[]): Promise<AppState> =>
     (appBinding() as AppBindings & { SavePHPConfig(m: string, u: string, p: string, t: number, e: string[]): Promise<AppState> }).SavePHPConfig(memoryLimit, uploadMax, postMax, maxExecTime, extraExts),
   getPHPConfig: (): Promise<PHPConfigInfo> => (appBinding() as AppBindings & { GetPHPConfig(): Promise<PHPConfigInfo> }).GetPHPConfig(),
