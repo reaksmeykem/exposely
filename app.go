@@ -250,6 +250,46 @@ func (a *App) StartStackService(service string) (models.AppState, error) {
 	return a.RefreshState()
 }
 
+// managedPHPVersionFromPath reports whether p points inside one of
+// Exposely's managed PHP installs (legacy root or a versioned dir) and
+// which version it holds.
+func managedPHPVersionFromPath(appDataDir, p string) (bool, string) {
+	dir := filepath.Dir(p)
+	root := stacks.PHPInstallDir(appDataDir)
+	if strings.EqualFold(dir, root) {
+		version := stacks.PHPVersionOf(root)
+		if !looksLikeVersionStr(version) {
+			version = stacks.PHPVersion
+		}
+		return true, version
+	}
+	base := filepath.Base(dir)
+	if strings.EqualFold(filepath.Dir(dir), root) && looksLikeVersionStr(base) {
+		return true, base
+	}
+	return false, ""
+}
+
+// looksLikeVersionStr checks the x[.y][.z] numeric shape used for PHP
+// version directory names.
+func looksLikeVersionStr(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // ensureServiceBinary provisions a binary for a service that has no
 // path configured: try local detection first (managed copies, EnvKit,
 // Laragon, XAMPP, PATH), then fall back to downloading Exposely's own
@@ -272,8 +312,9 @@ func (a *App) ensureServiceBinary(settingsValue models.AppSettings, service stac
 			settingsValue.Stack.NginxBinaryPath = p
 		case stacks.ServicePHP:
 			settingsValue.Stack.PHPCGIBinaryPath = p
-			if strings.EqualFold(filepath.Dir(p), stacks.PHPInstallDir(a.appDataDir)) {
+			if managed, version := managedPHPVersionFromPath(a.appDataDir, p); managed {
 				settingsValue.Stack.UseManagedPHP = true
+				settingsValue.Stack.ManagedPHPVersion = version
 			}
 		case stacks.ServiceMySQL:
 			settingsValue.Stack.MySQLDBinaryPath = p
@@ -306,6 +347,9 @@ func (a *App) ensureServiceBinary(settingsValue models.AppSettings, service stac
 		}
 		settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
 		settingsValue.Stack.UseManagedPHP = true
+		if version := stacks.PHPVersionOf(dir); looksLikeVersionStr(version) {
+			settingsValue.Stack.ManagedPHPVersion = version
+		}
 	case stacks.ServiceMySQL:
 		_, exePath, err := stacks.InstallMariaDB(a.appDataDir)
 		if err != nil {
@@ -1888,10 +1932,50 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 	return a.RefreshState()
 }
 
-// InstallManagedPHP downloads and installs Exposely's own PHP into
-// <appData>/stacks/php with a Laravel-ready php.ini, then points the
-// stack settings at it. Idempotent when already installed.
+// InstallManagedPHP downloads and installs Exposely's default PHP into
+// the managed versions dir with a Laravel-ready php.ini, then points
+// the stack settings at it. Idempotent when already installed.
+// Use InstallPHPVersion to pick a specific version.
 func (a *App) InstallManagedPHP() (models.AppState, error) {
+	return a.InstallPHPVersion(stacks.PHPVersion)
+}
+
+// ListPHPVersions reports the installable PHP versions plus what is
+// already on disk and which one the settings currently use.
+func (a *App) ListPHPVersions() map[string]interface{} {
+	installed := stacks.InstalledPHPVersions(a.appDataDir)
+	installedOut := make([]map[string]interface{}, 0, len(installed))
+	for _, v := range installed {
+		installedOut = append(installedOut, map[string]interface{}{
+			"version": v.Version,
+			"dir":     v.Dir,
+			"legacy":  v.Legacy,
+		})
+	}
+	active := ""
+	settingsValue, err := a.store.Load()
+	if err == nil && settingsValue.Stack.UseManagedPHP {
+		active = strings.TrimSpace(settingsValue.Stack.ManagedPHPVersion)
+		if active == "" {
+			for _, v := range installed {
+				if v.Legacy {
+					active = v.Version
+					break
+				}
+			}
+		}
+	}
+	return map[string]interface{}{
+		"installable": stacks.PHPInstallableVersions,
+		"installed":   installedOut,
+		"active":      active,
+	}
+}
+
+// InstallPHPVersion installs a specific managed PHP version (e.g.
+// "8.3.33") alongside any existing ones, and makes it the active one.
+// A running PHP service is restarted onto the new version.
+func (a *App) InstallPHPVersion(version string) (models.AppState, error) {
 	settingsValue, err := a.store.Load()
 	if err != nil {
 		return models.AppState{}, err
@@ -1900,19 +1984,30 @@ func (a *App) InstallManagedPHP() (models.AppState, error) {
 		Timestamp: nowStamp(),
 		Source:    "stack",
 		Level:     "info",
-		Message:   fmt.Sprintf("Installing PHP %s to %s ...", stacks.PHPVersion, stacks.PHPInstallDir(a.appDataDir)),
+		Message:   fmt.Sprintf("Installing PHP %s to %s ...", version, stacks.PHPVersionDir(a.appDataDir, version)),
 	})
-	dir, iniPath, err := stacks.InstallPHP(a.appDataDir)
+	dir, iniPath, err := stacks.InstallPHPVersion(a.appDataDir, version)
 	if err != nil {
 		return models.AppState{}, err
 	}
 
 	settingsValue.Stack.UseManagedPHP = true
+	settingsValue.Stack.ManagedPHPVersion = version
 	settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
 	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
 		return models.AppState{}, err
 	}
 	a.applyStackConfigs(settingsValue)
+
+	// Hot-swap: restart a running PHP service onto the new version so
+	// the switch is one click, no manual stop/start.
+	if a.stacks.Status(stacks.ServicePHP).Running {
+		a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "info", Message: "Restarting PHP onto " + version})
+		a.stacks.Stop(stacks.ServicePHP)
+		if st := a.stacks.Start(stacks.ServicePHP); !st.Running && st.LastError != "" {
+			return a.RefreshState()
+		}
+	}
 
 	a.pushLog(models.LogEntry{
 		Timestamp: nowStamp(),
@@ -1947,8 +2042,9 @@ func (a *App) DetectStackBinaries() (models.AppState, error) {
 			settingsValue.Stack.PHPCGIBinaryPath = p
 			// PHP config editing only applies to the managed install;
 			// mark it when the detected binary is Exposely's own.
-			if strings.EqualFold(filepath.Dir(p), stacks.PHPInstallDir(a.appDataDir)) {
+			if managed, version := managedPHPVersionFromPath(a.appDataDir, p); managed {
 				settingsValue.Stack.UseManagedPHP = true
+				settingsValue.Stack.ManagedPHPVersion = version
 			}
 			filled = append(filled, "php: "+p)
 		}
@@ -2054,8 +2150,8 @@ func (a *App) InstallManagedMariaDB() (models.AppState, error) {
 	return a.RefreshState()
 }
 
-// SavePHPConfig regenerates the managed php.ini from the supplied
-// settings. Only meaningful when UseManagedPHP is on; for a
+// SavePHPConfig regenerates the active managed php.ini from the
+// supplied settings. Only meaningful when UseManagedPHP is on; for a
 // user-supplied PHP path it regenerates nothing and returns a clear
 // error instead of silently editing someone else's install.
 func (a *App) SavePHPConfig(memoryLimit, uploadMaxFilesize, postMaxSize string, maxExecutionTime int, extraExtensions []string) (models.AppState, error) {
@@ -2063,8 +2159,11 @@ func (a *App) SavePHPConfig(memoryLimit, uploadMaxFilesize, postMaxSize string, 
 	if err != nil {
 		return models.AppState{}, err
 	}
-	phpDir := strings.TrimSpace(stacks.PHPInstallDir(a.appDataDir))
-	if !settingsValue.Stack.UseManagedPHP || !stacks.PHPInstalled(a.appDataDir) {
+	if !settingsValue.Stack.UseManagedPHP {
+		return models.AppState{}, errors.New("PHP settings apply to the Exposely-managed PHP. Install it first (Install PHP button)")
+	}
+	phpDir := stacks.ActivePHPDirFor(a.appDataDir, settingsValue.Stack.ManagedPHPVersion)
+	if !stacks.PHPDirHasBins(phpDir) {
 		return models.AppState{}, errors.New("PHP settings apply to the Exposely-managed PHP. Install it first (Install PHP button)")
 	}
 
@@ -2101,10 +2200,16 @@ func (a *App) SavePHPConfig(memoryLimit, uploadMaxFilesize, postMaxSize string, 
 // the UI can render the form.
 func (a *App) GetPHPConfig() map[string]interface{} {
 	settingsValue, err := a.store.Load()
+	managed := err == nil && settingsValue.Stack.UseManagedPHP
+	activeDir := ""
+	if managed {
+		activeDir = stacks.ActivePHPDirFor(a.appDataDir, settingsValue.Stack.ManagedPHPVersion)
+	}
 	result := map[string]interface{}{
-		"installed":     stacks.PHPInstalled(a.appDataDir),
-		"installDir":    stacks.PHPInstallDir(a.appDataDir),
-		"useManagedPHP": settingsValue.Stack.UseManagedPHP,
+		"installed":     managed && stacks.PHPDirHasBins(activeDir),
+		"installDir":    activeDir,
+		"useManagedPHP": managed,
+		"managedVersion": strings.TrimSpace(settingsValue.Stack.ManagedPHPVersion),
 		"memoryLimit":   settingsValue.Stack.PHPMemoryLimit,
 		"uploadMax":     settingsValue.Stack.PHPUploadMaxFilesize,
 		"postMax":       settingsValue.Stack.PHPPostMaxSize,
@@ -2113,9 +2218,9 @@ func (a *App) GetPHPConfig() map[string]interface{} {
 		"version":       "",
 		"iniPath":       "",
 	}
-	if err == nil && stacks.PHPInstalled(a.appDataDir) {
-		result["version"] = stacks.PHPVersionOf(stacks.PHPInstallDir(a.appDataDir))
-		result["iniPath"] = stacks.PhpIniPath(stacks.PHPInstallDir(a.appDataDir))
+	if managed && stacks.PHPDirHasBins(activeDir) {
+		result["version"] = stacks.PHPVersionOf(activeDir)
+		result["iniPath"] = stacks.PhpIniPath(activeDir)
 	}
 	return result
 }

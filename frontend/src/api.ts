@@ -50,6 +50,9 @@ export const api = {
   installManagedNginx: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedNginx(): Promise<AppState> }).InstallManagedNginx(),
   installManagedMariaDB: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedMariaDB(): Promise<AppState> }).InstallManagedMariaDB(),
   detectStackBinaries: (): Promise<AppState> => (appBinding() as AppBindings & { DetectStackBinaries(): Promise<AppState> }).DetectStackBinaries(),
+  listPHPVersions: (): Promise<{ installable: string[]; installed: { version: string; dir: string; legacy: boolean }[]; active: string }> =>
+    (appBinding() as AppBindings & { ListPHPVersions(): Promise<{ installable: string[]; installed: { version: string; dir: string; legacy: boolean }[]; active: string }> }).ListPHPVersions(),
+  installPHPVersion: (version: string): Promise<AppState> => (appBinding() as AppBindings & { InstallPHPVersion(version: string): Promise<AppState> }).InstallPHPVersion(version),
   savePHPConfig: (memoryLimit: string, uploadMax: string, postMax: string, maxExecTime: number, extraExts: string[]): Promise<AppState> =>
     (appBinding() as AppBindings & { SavePHPConfig(m: string, u: string, p: string, t: number, e: string[]): Promise<AppState> }).SavePHPConfig(memoryLimit, uploadMax, postMax, maxExecTime, extraExts),
   getPHPConfig: (): Promise<PHPConfigInfo> => (appBinding() as AppBindings & { GetPHPConfig(): Promise<PHPConfigInfo> }).GetPHPConfig(),

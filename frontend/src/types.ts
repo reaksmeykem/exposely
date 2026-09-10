@@ -49,6 +49,7 @@ export interface PHPConfigInfo {
   installed: boolean;
   installDir: string;
   useManagedPHP: boolean;
+  managedVersion?: string;
   memoryLimit: string;
   uploadMax: string;
   postMax: string;

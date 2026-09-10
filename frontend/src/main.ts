@@ -29,6 +29,7 @@ interface UIState {
   projectSearch: string;
   stackStatuses: StackServiceStatus[];
   phpConfig: PHPConfigInfo | null;
+  phpVersions: { installable: string[]; installed: { version: string; dir: string; legacy: boolean }[]; active: string } | null;
   stackDraft: {
     nginxBinaryPath: string;
     phpCgiBinaryPath: string;
@@ -79,6 +80,7 @@ const state: UIState = {
   projectSearch: '',
   stackStatuses: [],
   phpConfig: null,
+  phpVersions: null,
   stackDraft: blankStackDraft(),
 };
 
@@ -1007,9 +1009,14 @@ function render() {
                          <h2>${t('phpSectionSubtitle')}</h2>
                        </div>
                        <div class="action-row">
+                         <select name="phpInstallVersion" class="php-version-select" title="${t('phpVersionPickTitle')}">
+                           ${(state.phpVersions?.installable ?? []).map((v) => `<option value="${escapeHtml(v)}" ${v === (state.phpConfig?.managedVersion || '') ? 'selected' : ''}>PHP ${escapeHtml(v)}</option>`).join('')}
+                         </select>
+                         <button type="button" class="secondary" data-action="php-install-version" title="${t('phpVersionInstallTitle')}">${t('phpVersionInstall')}</button>
                          <button type="button" class="secondary" data-action="php-install">${state.phpConfig?.installed ? t('phpReinstall') : t('phpInstall')}</button>
                        </div>
                      </div>
+                     ${phpVersionsList()}
                      <p class="hint" style="margin-top: 4px;">${state.phpConfig?.installed ? `${t('phpInstalledAt')}: ${escapeHtml(state.phpConfig.installDir)} (${escapeHtml(state.phpConfig.version || '?')})` : t('phpNotInstalledHint')}</p>
                      ${state.phpConfig?.installed ? `
                      <form id="php-config-form" class="form-grid">
@@ -1109,8 +1116,23 @@ function syncStackDraftFromState(appState: AppState) {
   };
 }
 
-function stackStatusCards(): string {
-  if (!state.stackStatuses.length) {
+function phpVersionsList(): string {
+  const pv = state.phpVersions;
+  if (!pv || !pv.installed.length) {
+    return '';
+  }
+  const active = pv.active || state.phpConfig?.managedVersion || '';
+  const rows = pv.installed.map((inst) => {
+    const isActive = inst.version === active || inst.dir === state.phpConfig?.installDir;
+    return `<span class="pill ${isActive ? 'pill-success' : 'pill-outline'} php-version-chip">
+      PHP ${escapeHtml(inst.version)}${isActive ? ` · ${t('phpActiveVersion')}` : ''}
+      ${!isActive ? `<button type="button" class="php-version-use" data-action="php-use-version" data-version="${escapeHtml(inst.version)}" title="${t('phpUseVersionTitle')}">${t('phpUseVersion')}</button>` : ''}
+    </span>`;
+  }).join(' ');
+  return `<div class="php-versions-row"><span class="summary-label">${t('phpInstalledVersions')}</span><div class="php-version-chips">${rows}</div></div>`;
+}
+
+function stackStatusCards(): string {  if (!state.stackStatuses.length) {
     return '';
   }
   return state.stackStatuses
@@ -1241,6 +1263,18 @@ function bindForms() {
     }
   });
 
+  // Reload the PHP versions panel whenever the settings view renders.
+  const settingsRoot = root.querySelector('#settings-view, main, body') ?? root;
+  if (!state.phpVersions) {
+    void api.listPHPVersions().then((pv) => {
+      state.phpVersions = pv;
+      if (state.activeTab === 'settings') {
+        render();
+      }
+    }).catch(() => {});
+  }
+  void settingsRoot;
+
   const stackForm = root.querySelector<HTMLFormElement>('#stack-form');
   stackForm?.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1299,7 +1333,7 @@ function bindForms() {
   });
 }
 
-async function handleAction(action: string, id: string | null) {
+async function handleAction(action: string, id: string | null, sourceEl: HTMLElement | null = null) {
   switch (action) {
     case 'toggle-lang': {
       const newLang = getLang() === 'en' ? 'km' : 'en';
@@ -1403,7 +1437,38 @@ async function handleAction(action: string, id: string | null) {
       if (next) {
         state.appState = next;
         state.phpConfig = await api.getPHPConfig().catch(() => state.phpConfig);
+        state.phpVersions = await api.listPHPVersions().catch(() => state.phpVersions);
         setNotice('success', t('phpInstallDone'));
+      }
+      return;
+    }
+    case 'php-install-version': {
+      const select = document.querySelector<HTMLSelectElement>('select[name="phpInstallVersion"]');
+      const version = (select?.value ?? '').trim();
+      if (!version) {
+        setNotice('info', t('phpVersionPickTitle'));
+        return;
+      }
+      const next = await withAction(`${t('phpVersionInstall')} ${version}`, () => api.installPHPVersion(version));
+      if (next) {
+        state.appState = next;
+        state.phpConfig = await api.getPHPConfig().catch(() => state.phpConfig);
+        state.phpVersions = await api.listPHPVersions().catch(() => state.phpVersions);
+        setNotice('success', `${t('phpVersionInstallDone')}: PHP ${version}`);
+      }
+      return;
+    }
+    case 'php-use-version': {
+      const version = sourceEl?.dataset.version ?? '';
+      if (!version) {
+        return;
+      }
+      const next = await withAction(`${t('phpUseVersion')} PHP ${version}`, () => api.installPHPVersion(version));
+      if (next) {
+        state.appState = next;
+        state.phpConfig = await api.getPHPConfig().catch(() => state.phpConfig);
+        state.phpVersions = await api.listPHPVersions().catch(() => state.phpVersions);
+        setNotice('success', `${t('phpVersionSwitchDone')}: PHP ${version}`);
       }
       return;
     }
@@ -1763,7 +1828,7 @@ root.addEventListener('click', (event) => {
   event.preventDefault();
   const id = actionElement.dataset.id ?? selectedProject()?.id ?? null;
   if (!action) return;
-  void handleAction(action, id);
+  void handleAction(action, id, actionElement);
 });
 
 async function bootstrap() {
@@ -1811,6 +1876,15 @@ async function bootstrap() {
     render();
   }).catch(() => {
     // PHP config panel is optional.
+  });
+
+  void api.listPHPVersions().then((pv) => {
+    state.phpVersions = pv;
+    if (state.activeTab === 'settings') {
+      render();
+    }
+  }).catch(() => {
+    // PHP versions panel is optional (older backend).
   });
 
   void api.checkForUpdates().then((latest) => {

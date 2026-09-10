@@ -8,16 +8,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/reaksmeykem/exposely/internal/sysproc"
 )
 
-// PHPVersion is the PHP release Exposely installs when the user asks for
-// a managed PHP. Thread-Safe, x64 build (required for stable FastCGI
-// worker processes).
+// PHPVersion is the default PHP release Exposely installs when the user
+// asks for a managed PHP. Thread-Safe, x64 build (required for stable
+// FastCGI worker processes).
 const PHPVersion = "8.4.25"
+
+// PHPInstallableVersions lists the PHP releases windows.php.net serves
+// today (verified HTTP 200 through the phpDownloadURLs fallback chain).
+// 8.1–8.3 ship as vs16 builds, 8.4+ as vs17; the URL list handles both.
+// The InstallPHPVersion handler also accepts any other x.y.z so newer
+// patches keep working without a code change.
+var PHPInstallableVersions = []string{"8.1.34", "8.2.33", "8.3.33", "8.4.25", "8.5.10"}
 
 // phpDownloadURLs lists candidate URLs for a PHP release in priority
 // order: current releases first, then the archives folder where
@@ -31,15 +39,56 @@ func phpDownloadURLs(version string) []string {
 	}
 }
 
-// PHPInstallDir returns where Exposely installs its own PHP.
+// PHPInstallDir returns the legacy managed-PHP root (the pre
+// multi-version layout). Installs made before versioned PHP existed
+// live directly here; it stays supported and is reported as an
+// installed PHPVersion of whatever it contains.
 func PHPInstallDir(appDataDir string) string {
 	return filepath.Join(appDataDir, "stacks", "php")
 }
 
-// PHPInstalled reports whether Exposely's managed PHP is present and
-// looks like a real PHP install (php-cgi.exe + php.exe).
-func PHPInstalled(appDataDir string) bool {
-	dir := PHPInstallDir(appDataDir)
+// PHPVersionsRoot is the parent folder holding one sub-directory per
+// installed PHP version.
+func PHPVersionsRoot(appDataDir string) string {
+	return PHPInstallDir(appDataDir)
+}
+
+// PHPVersionDir returns the install directory for a specific PHP
+// version, e.g. <appData>/stacks/php/8.3.33.
+func PHPVersionDir(appDataDir, version string) string {
+	return filepath.Join(appDataDir, "stacks", "php", sanitizeVersion(version))
+}
+
+func sanitizeVersion(version string) string {
+	v := strings.TrimSpace(version)
+	// Keep it to x.y.z so the path can never escape the versions root.
+	if !looksLikeVersion(v) {
+		return ""
+	}
+	return v
+}
+
+func looksLikeVersion(version string) bool {
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || len(p) > 3 {
+			return false
+		}
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// phpDirHasBins reports whether dir looks like a real PHP install
+// (php-cgi.exe + php.exe both present).
+func PHPDirHasBins(dir string) bool {
 	if _, err := os.Stat(filepath.Join(dir, "php-cgi.exe")); err != nil {
 		return false
 	}
@@ -49,20 +98,96 @@ func PHPInstalled(appDataDir string) bool {
 	return true
 }
 
-// InstallPHP downloads and extracts the official PHP Windows zip into
-// Exposely's data dir. Steps:
+// PHPVersionInstall describes one installed managed PHP version.
+type PHPVersionInstall struct {
+	// Version string like "8.4.25". The pre-multi-version layout is
+	// reported as whatever its php.exe says (typically 8.4.25).
+	Version string
+	// Dir is the install directory.
+	Dir string
+	// Legacy marks an install in the old un-versioned location.
+	Legacy bool
+}
+
+// InstalledPHPVersions enumerates the managed PHP installs on disk:
+// every versioned directory plus the legacy root when present. Sorted
+// by version, oldest first.
+func InstalledPHPVersions(appDataDir string) []PHPVersionInstall {
+	var out []PHPVersionInstall
+	root := PHPVersionsRoot(appDataDir)
+	entries, err := os.ReadDir(root)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() || !looksLikeVersion(e.Name()) {
+				continue
+			}
+			dir := filepath.Join(root, e.Name())
+			if PHPDirHasBins(dir) {
+				out = append(out, PHPVersionInstall{Version: e.Name(), Dir: dir})
+			}
+		}
+	}
+	// Legacy root install (files directly in stacks/php).
+	if PHPDirHasBins(root) {
+		version := PHPVersionOf(root)
+		if version == "" || !looksLikeVersion(version) {
+			version = PHPVersion
+		}
+		out = append(out, PHPVersionInstall{Version: version, Dir: root, Legacy: true})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return compareVersionPaths(out[i].Version, out[j].Version) < 0
+	})
+	return out
+}
+
+// ActivePHPDirFor resolves the directory of the active managed PHP for
+// a settings-stored version: the versioned dir when it exists, then
+// the legacy root, then the default version's (possibly future) dir.
+func ActivePHPDirFor(appDataDir, version string) string {
+	if v := sanitizeVersion(version); v != "" {
+		dir := PHPVersionDir(appDataDir, v)
+		if PHPDirHasBins(dir) {
+			return dir
+		}
+	}
+	if PHPDirHasBins(PHPInstallDir(appDataDir)) {
+		return PHPInstallDir(appDataDir)
+	}
+	return PHPVersionDir(appDataDir, PHPVersion)
+}
+
+// PHPInstalled reports whether Exposely's managed PHP is present and
+// looks like a real PHP install (php-cgi.exe + php.exe).
+func PHPInstalled(appDataDir string) bool {
+	return PHPDirHasBins(PHPInstallDir(appDataDir))
+}
+
+// InstallPHP downloads and extracts the default managed PHP version.
+// See InstallPHPVersion for the general flow.
+func InstallPHP(appDataDir string) (string, string, error) {
+	return InstallPHPVersion(appDataDir, PHPVersion)
+}
+
+// InstallPHPVersion downloads and extracts the official PHP Windows zip
+// for the requested version into <appData>/stacks/php/<version>.
+// Steps:
 //
 //  1. Skip when already installed (idempotent).
 //  2. Download the archive to a temp file.
-//  3. Extract into <appData>/stacks/php (cleaning a partial attempt
-//     first).
+//  3. Extract into the version dir (cleaning a partial attempt first).
 //  4. Write a production-oriented php.ini with the extensions Laravel
-//     needs, enabled by default.
+//     needs, enabled by default (only when no ini exists yet, so user
+//     tuning survives a reinstall).
 //
 // Returns the install directory and the php.ini path.
-func InstallPHP(appDataDir string) (string, string, error) {
-	dir := PHPInstallDir(appDataDir)
-	if PHPInstalled(appDataDir) {
+func InstallPHPVersion(appDataDir, version string) (string, string, error) {
+	version = strings.TrimSpace(version)
+	if !looksLikeVersion(version) {
+		return "", "", fmt.Errorf("invalid PHP version %q (expected x.y.z)", version)
+	}
+	dir := PHPVersionDir(appDataDir, version)
+	if PHPDirHasBins(dir) {
 		return dir, PhpIniPath(dir), nil
 	}
 
@@ -70,7 +195,7 @@ func InstallPHP(appDataDir string) (string, string, error) {
 		return "", "", err
 	}
 
-	zipPath, err := downloadPHPZip()
+	zipPath, err := downloadPHPZip(version)
 	if err != nil {
 		return "", "", err
 	}
@@ -86,20 +211,22 @@ func InstallPHP(appDataDir string) (string, string, error) {
 	}
 
 	// Sanity check: the archive must contain the binaries we run.
-	if !PHPInstalled(appDataDir) {
-		return "", "", fmt.Errorf("php archive did not contain php-cgi.exe/php.exe")
+	if !PHPDirHasBins(dir) {
+		return "", "", fmt.Errorf("php %s archive did not contain php-cgi.exe/php.exe", version)
 	}
 
 	iniPath := PhpIniPath(dir)
-	if err := WriteFile(iniPath, PHPIniTemplate(dir)); err != nil {
-		return "", "", fmt.Errorf("write php.ini: %w", err)
+	if _, err := os.Stat(iniPath); err != nil {
+		if err := WriteFile(iniPath, PHPIniTemplate(dir)); err != nil {
+			return "", "", fmt.Errorf("write php.ini: %w", err)
+		}
 	}
 	return dir, iniPath, nil
 }
 
-func downloadPHPZip() (string, error) {
+func downloadPHPZip(version string) (string, error) {
 	var lastErr error
-	for _, url := range phpDownloadURLs(PHPVersion) {
+	for _, url := range phpDownloadURLs(version) {
 		zipPath, err := downloadFile(url)
 		if err == nil {
 			return zipPath, nil

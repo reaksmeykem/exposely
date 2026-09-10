@@ -78,6 +78,9 @@ type StackSettings struct {
 	// UseManagedPHP marks the stack as running Exposely's own PHP
 	// install (<appData>/stacks/php) instead of a user-supplied path.
 	UseManagedPHP bool `json:"useManagedPhp,omitempty"`
+	// ManagedPHPVersion selects which managed PHP version runs when
+	// UseManagedPHP is on (e.g. "8.4.25"). Empty means the default.
+	ManagedPHPVersion string `json:"managedPhpVersion,omitempty"`
 }
 
 func (s StackSettings) EffectiveNginxPort() int {

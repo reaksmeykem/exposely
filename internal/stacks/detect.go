@@ -70,12 +70,15 @@ func DetectBinaries(appDataDir string) map[Service]string {
 	return out
 }
 
-// managedPHPCgi returns the managed php-cgi path when the managed PHP
-// install exists.
+// managedPHPCgi returns the managed php-cgi path: the legacy root
+// install when present, otherwise the newest versioned install.
 func managedPHPCgi(appDataDir string) string {
-	p := filepath.Join(PHPInstallDir(appDataDir), "php-cgi.exe")
-	if fileExists(p) {
-		return p
+	legacy := filepath.Join(PHPInstallDir(appDataDir), "php-cgi.exe")
+	if fileExists(legacy) {
+		return legacy
+	}
+	if newest := newestGlob(filepath.Join(PHPVersionsRoot(appDataDir), "*", "php-cgi.exe")); newest != "" {
+		return newest
 	}
 	return ""
 }

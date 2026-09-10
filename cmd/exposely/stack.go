@@ -167,6 +167,46 @@ func (c *cliStackRunner) startAll() error {
 	return nil
 }
 
+// managedPHPVersionFromPath reports whether p points inside one of
+// Exposely's managed PHP installs (legacy root or a versioned dir) and
+// which version it holds.
+func managedPHPVersionFromPath(appDataDir, p string) (bool, string) {
+	dir := filepath.Dir(p)
+	root := stacks.PHPInstallDir(appDataDir)
+	if strings.EqualFold(dir, root) {
+		version := stacks.PHPVersionOf(root)
+		if !looksLikeVersionStr(version) {
+			version = stacks.PHPVersion
+		}
+		return true, version
+	}
+	base := filepath.Base(dir)
+	if strings.EqualFold(filepath.Dir(dir), root) && looksLikeVersionStr(base) {
+		return true, base
+	}
+	return false, ""
+}
+
+// looksLikeVersionStr checks the x[.y][.z] numeric shape used for PHP
+// version directory names.
+func looksLikeVersionStr(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // configuredBinary mirrors the desktop app's stacksConfiguredBinary:
 // the settings path for a service, trimmed.
 func (c *cliStackRunner) configuredBinary(settingsValue models.AppSettings, service stacks.Service) string {
@@ -194,8 +234,9 @@ func (c *cliStackRunner) ensureBinary(settingsValue models.AppSettings, service 
 			settingsValue.Stack.NginxBinaryPath = p
 		case stacks.ServicePHP:
 			settingsValue.Stack.PHPCGIBinaryPath = p
-			if strings.EqualFold(filepath.Dir(p), stacks.PHPInstallDir(c.appDataDir)) {
+			if managed, version := managedPHPVersionFromPath(c.appDataDir, p); managed {
 				settingsValue.Stack.UseManagedPHP = true
+				settingsValue.Stack.ManagedPHPVersion = version
 			}
 		case stacks.ServiceMySQL:
 			settingsValue.Stack.MySQLDBinaryPath = p
@@ -221,6 +262,9 @@ func (c *cliStackRunner) ensureBinary(settingsValue models.AppSettings, service 
 		}
 		settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
 		settingsValue.Stack.UseManagedPHP = true
+		if version := stacks.PHPVersionOf(dir); looksLikeVersionStr(version) {
+			settingsValue.Stack.ManagedPHPVersion = version
+		}
 		fmt.Printf("php.ini: %s\n", iniPath)
 	case stacks.ServiceMySQL:
 		_, exePath, err := stacks.InstallMariaDB(c.appDataDir)

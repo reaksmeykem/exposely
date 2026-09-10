@@ -1055,3 +1055,37 @@ label.checkbox-row small.hint {
 @media (max-width: 860px) {
   .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* PHP versions panel (Managed PHP section) */
+.php-versions-row {
+  margin: 10px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.php-version-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.php-version-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.php-version-chip .php-version-use {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted-strong);
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.php-version-chip .php-version-use:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.php-version-select {
+  max-width: 160px;
+}
