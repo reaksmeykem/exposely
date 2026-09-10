@@ -110,15 +110,23 @@ func (c *cliStackRunner) startService(name string) error {
 
 	normalized := stacks.Service(strings.ToLower(strings.TrimSpace(name)))
 	switch normalized {
-	case stacks.ServiceNginx, stacks.ServicePHP:
-	case stacks.ServiceMySQL:
-		cfg, ok := c.manager.Config(stacks.ServiceMySQL)
-		if !ok || strings.TrimSpace(cfg.BinaryPath) == "" {
-			return errors.New("mysqld binary path is not configured (set stack.mysqlDBinaryPath in settings.json)")
+	case stacks.ServiceNginx, stacks.ServicePHP, stacks.ServiceMySQL:
+		if strings.TrimSpace(c.configuredBinary(settingsValue, normalized)) == "" {
+			var ensureErr error
+			settingsValue, ensureErr = c.ensureBinary(settingsValue, normalized)
+			if ensureErr != nil {
+				return ensureErr
+			}
 		}
-		dataDir := filepath.Join(c.appDataDir, "stacks", "mysql", "data")
-		if err := stacks.EnsureMySQLDataDir(cfg.BinaryPath, dataDir); err != nil {
-			return err
+		if normalized == stacks.ServiceMySQL {
+			cfg, _ := c.manager.Config(stacks.ServiceMySQL)
+			if strings.TrimSpace(cfg.BinaryPath) == "" {
+				return errors.New("mysqld binary path is not configured (set stack.mysqlDBinaryPath in settings.json)")
+			}
+			dataDir := filepath.Join(c.appDataDir, "stacks", "mysql", "data")
+			if err := stacks.EnsureMySQLDataDir(cfg.BinaryPath, dataDir); err != nil {
+				return err
+			}
 		}
 	default:
 		return fmt.Errorf("unknown service %q (use nginx, php, or mysql)", name)
@@ -157,6 +165,75 @@ func (c *cliStackRunner) startAll() error {
 		}
 	}
 	return nil
+}
+
+// configuredBinary mirrors the desktop app's stacksConfiguredBinary:
+// the settings path for a service, trimmed.
+func (c *cliStackRunner) configuredBinary(settingsValue models.AppSettings, service stacks.Service) string {
+	switch service {
+	case stacks.ServiceNginx:
+		return strings.TrimSpace(settingsValue.Stack.NginxBinaryPath)
+	case stacks.ServicePHP:
+		return strings.TrimSpace(settingsValue.Stack.PHPCGIBinaryPath)
+	case stacks.ServiceMySQL:
+		return strings.TrimSpace(settingsValue.Stack.MySQLDBinaryPath)
+	}
+	return ""
+}
+
+// ensureBinary provisions a missing binary the same way the desktop app
+// does: detect an existing local install first (managed copies, EnvKit,
+// Laragon, XAMPP, PATH), then fall back to downloading Exposely's own.
+func (c *cliStackRunner) ensureBinary(settingsValue models.AppSettings, service stacks.Service) (models.AppSettings, error) {
+	fmt.Printf("%s has no binary configured — detecting, then installing if needed\n", service)
+
+	found := stacks.DetectBinaries(c.appDataDir)
+	if p := found[service]; p != "" {
+		switch service {
+		case stacks.ServiceNginx:
+			settingsValue.Stack.NginxBinaryPath = p
+		case stacks.ServicePHP:
+			settingsValue.Stack.PHPCGIBinaryPath = p
+			if strings.EqualFold(filepath.Dir(p), stacks.PHPInstallDir(c.appDataDir)) {
+				settingsValue.Stack.UseManagedPHP = true
+			}
+		case stacks.ServiceMySQL:
+			settingsValue.Stack.MySQLDBinaryPath = p
+		}
+		if err := c.store.Save(settingsValue); err != nil {
+			return models.AppSettings{}, err
+		}
+		fmt.Printf("detected %s at %s\n", service, p)
+		return settingsValue, nil
+	}
+
+	switch service {
+	case stacks.ServiceNginx:
+		_, exePath, err := stacks.InstallNginx(c.appDataDir)
+		if err != nil {
+			return models.AppSettings{}, err
+		}
+		settingsValue.Stack.NginxBinaryPath = exePath
+	case stacks.ServicePHP:
+		dir, iniPath, err := stacks.InstallPHP(c.appDataDir)
+		if err != nil {
+			return models.AppSettings{}, err
+		}
+		settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
+		settingsValue.Stack.UseManagedPHP = true
+		fmt.Printf("php.ini: %s\n", iniPath)
+	case stacks.ServiceMySQL:
+		_, exePath, err := stacks.InstallMariaDB(c.appDataDir)
+		if err != nil {
+			return models.AppSettings{}, err
+		}
+		settingsValue.Stack.MySQLDBinaryPath = exePath
+	}
+	if err := c.store.Save(settingsValue); err != nil {
+		return models.AppSettings{}, err
+	}
+	fmt.Printf("installed Exposely-managed %s\n", service)
+	return settingsValue, nil
 }
 
 func (c *cliStackRunner) stopAll() {

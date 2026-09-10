@@ -204,8 +204,11 @@ func (a *App) StackStatus() []stacks.Status {
 }
 
 // StartStackService starts one of "nginx", "php", or "mysql". For mysql
-// it first initialises the data dir when needed. Returns the refreshed
-// AppState so the UI updates in one round-trip.
+// it first initialises the data dir when needed. When a service has no
+// binary configured, it auto-detects one; failing that it auto-installs
+// Exposely's own copy, so a fresh machine can go from zero to a running
+// stack without touching Settings. Returns the refreshed AppState so
+// the UI updates in one round-trip.
 func (a *App) StartStackService(service string) (models.AppState, error) {
 	settingsValue, err := a.store.Load()
 	if err != nil {
@@ -215,9 +218,19 @@ func (a *App) StartStackService(service string) (models.AppState, error) {
 
 	normalized := stacks.Service(strings.ToLower(strings.TrimSpace(service)))
 	switch normalized {
-	case stacks.ServiceNginx, stacks.ServicePHP:
-		// nothing extra
-	case stacks.ServiceMySQL:
+	case stacks.ServiceNginx, stacks.ServicePHP, stacks.ServiceMySQL:
+		if strings.TrimSpace(a.stacksConfiguredBinary(settingsValue, normalized)) == "" {
+			var err error
+			settingsValue, err = a.ensureServiceBinary(settingsValue, normalized)
+			if err != nil {
+				return models.AppState{}, err
+			}
+		}
+	default:
+		return models.AppState{}, fmt.Errorf("unknown stack service %q (use nginx, php, or mysql)", service)
+	}
+
+	if normalized == stacks.ServiceMySQL {
 		cfg, _ := a.stacks.Config(stacks.ServiceMySQL)
 		if strings.TrimSpace(cfg.BinaryPath) == "" {
 			return models.AppState{}, errors.New("mysqld binary path is not configured in Settings")
@@ -227,8 +240,6 @@ func (a *App) StartStackService(service string) (models.AppState, error) {
 		if err := stacks.EnsureMySQLDataDir(cfg.BinaryPath, dataDir); err != nil {
 			return models.AppState{}, err
 		}
-	default:
-		return models.AppState{}, fmt.Errorf("unknown stack service %q (use nginx, php, or mysql)", service)
 	}
 
 	status := a.stacks.Start(normalized)
@@ -237,6 +248,82 @@ func (a *App) StartStackService(service string) (models.AppState, error) {
 	}
 	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "success", Message: "Started " + string(normalized)})
 	return a.RefreshState()
+}
+
+// ensureServiceBinary provisions a binary for a service that has no
+// path configured: try local detection first (managed copies, EnvKit,
+// Laragon, XAMPP, PATH), then fall back to downloading Exposely's own
+// install. The returned settings value is reloaded after either path
+// persists the new binary location.
+func (a *App) ensureServiceBinary(settingsValue models.AppSettings, service stacks.Service) (models.AppSettings, error) {
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "info",
+		Message:   fmt.Sprintf("%s has no binary configured — detecting, then installing if needed", service),
+	})
+
+	// Detection first: cheap, no download, respects an existing local
+	// stack the user has not pointed at yet.
+	found := stacks.DetectBinaries(a.appDataDir)
+	if p := found[service]; p != "" {
+		switch service {
+		case stacks.ServiceNginx:
+			settingsValue.Stack.NginxBinaryPath = p
+		case stacks.ServicePHP:
+			settingsValue.Stack.PHPCGIBinaryPath = p
+			if strings.EqualFold(filepath.Dir(p), stacks.PHPInstallDir(a.appDataDir)) {
+				settingsValue.Stack.UseManagedPHP = true
+			}
+		case stacks.ServiceMySQL:
+			settingsValue.Stack.MySQLDBinaryPath = p
+		}
+		if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+			return models.AppSettings{}, err
+		}
+		a.applyStackConfigs(settingsValue)
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "stack",
+			Level:     "info",
+			Message:   fmt.Sprintf("Detected %s at %s", service, p),
+		})
+		return settingsValue, nil
+	}
+
+	// Nothing on the machine: install Exposely's own copy.
+	switch service {
+	case stacks.ServiceNginx:
+		_, exePath, err := stacks.InstallNginx(a.appDataDir)
+		if err != nil {
+			return models.AppSettings{}, err
+		}
+		settingsValue.Stack.NginxBinaryPath = exePath
+	case stacks.ServicePHP:
+		dir, _, err := stacks.InstallPHP(a.appDataDir)
+		if err != nil {
+			return models.AppSettings{}, err
+		}
+		settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
+		settingsValue.Stack.UseManagedPHP = true
+	case stacks.ServiceMySQL:
+		_, exePath, err := stacks.InstallMariaDB(a.appDataDir)
+		if err != nil {
+			return models.AppSettings{}, err
+		}
+		settingsValue.Stack.MySQLDBinaryPath = exePath
+	}
+	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		return models.AppSettings{}, err
+	}
+	a.applyStackConfigs(settingsValue)
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "success",
+		Message:   fmt.Sprintf("Installed Exposely-managed %s", service),
+	})
+	return settingsValue, nil
 }
 
 // StartStack brings the whole managed stack up in dependency order:
@@ -1860,7 +1947,7 @@ func (a *App) DetectStackBinaries() (models.AppState, error) {
 			settingsValue.Stack.PHPCGIBinaryPath = p
 			// PHP config editing only applies to the managed install;
 			// mark it when the detected binary is Exposely's own.
-			if strings.EqualFold(filepath.Dir(filepath.Dir(p)), stacks.PHPInstallDir(a.appDataDir)) {
+			if strings.EqualFold(filepath.Dir(p), stacks.PHPInstallDir(a.appDataDir)) {
 				settingsValue.Stack.UseManagedPHP = true
 			}
 			filled = append(filled, "php: "+p)
