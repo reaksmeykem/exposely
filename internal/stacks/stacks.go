@@ -84,6 +84,23 @@ type managedProc struct {
 	cmd       *exec.Cmd
 	startedAt time.Time
 	lastError string
+	// done is closed by the exit watcher when the child exits, so
+	// status can distinguish a live process from one that already
+	// died without blocking on Wait.
+	done chan struct{}
+}
+
+// alive reports whether the child process is still running.
+func (p *managedProc) alive() bool {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // NewManager returns a Manager with no configured services. Call
@@ -130,7 +147,7 @@ func (m *Manager) Start(service Service) Status {
 	if !ok || filepath.Clean(cfg.BinaryPath) == "." || filepath.Clean(cfg.BinaryPath) == "" {
 		return m.setStatus(service, false, fmt.Sprintf("%s is not configured: set the binary path first", service))
 	}
-	if p, running := m.procs[service]; running && p != nil && p.cmd.Process != nil {
+	if p, running := m.procs[service]; running && p.alive() {
 		// Already running — report current state instead of double starting.
 		return m.statusLocked(service)
 	}
@@ -157,10 +174,18 @@ func (m *Manager) Start(service Service) Status {
 		return m.setStatus(service, false, fmt.Sprintf("start %s: %v", service, err))
 	}
 
-	m.procs[service] = &managedProc{
+	proc := &managedProc{
 		cmd:       cmd,
 		startedAt: time.Now(),
+		done:      make(chan struct{}),
 	}
+	// Watch for child exit so status stays honest when a service dies
+	// after a successful launch (port clash, config error, crash).
+	go func(c *exec.Cmd, done chan struct{}) {
+		_ = c.Wait()
+		close(done)
+	}(cmd, proc.done)
+	m.procs[service] = proc
 	return m.statusLocked(service)
 }
 
@@ -173,14 +198,14 @@ func (m *Manager) Stop(service Service) Status {
 	defer m.mu.Unlock()
 
 	p, ok := m.procs[service]
-	if !ok || p == nil || p.cmd.Process == nil {
+	if !ok || !p.alive() {
+		delete(m.procs, service)
 		return m.setStatus(service, false, "")
 	}
 	// Release our wait handle first so the child does not linger as a
 	// zombie; then kill it. Ignore Kill errors — the process may already
 	// have exited on its own.
 	_ = p.cmd.Process.Kill()
-	go func(c *exec.Cmd) { _ = c.Wait() }(p.cmd)
 	delete(m.procs, service)
 	return m.setStatus(service, false, "")
 }
@@ -224,7 +249,7 @@ func (m *Manager) statusLocked(service Service) Status {
 	if p == nil {
 		return Status{Service: service, LastError: p.lastErrorIfAny()}
 	}
-	running := p.cmd.Process != nil && p.cmd.ProcessState == nil
+	running := p.alive()
 	startedAt := ""
 	if running {
 		startedAt = p.startedAt.Format(time.RFC3339)

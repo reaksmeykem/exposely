@@ -155,19 +155,32 @@ func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
 	}
 
 	if strings.TrimSpace(stack.MySQLDBinaryPath) != "" {
+		mysqlBinDir := filepath.Dir(strings.TrimSpace(stack.MySQLDBinaryPath))
+		mysqlBaseDir := mysqlBaseDirFromBinDir(mysqlBinDir)
 		mysqlArgs := stacks.MySQLStartArgs(stacks.MySQLDefaults{
-			BaseDir: filepath.Dir(strings.TrimSpace(stack.MySQLDBinaryPath)),
+			BaseDir: mysqlBaseDir,
 			DataDir: a.stackMySQLDataDir(),
 			Port:    stack.EffectiveMySQLPort(),
 		})
 		a.stacks.SetConfig(stacks.ServiceMySQL, stacks.ServiceConfig{
 			BinaryPath: stack.MySQLDBinaryPath,
 			Args:       mysqlArgs,
-			Env:        []string{"MYSQL_HOME=" + filepath.Dir(strings.TrimSpace(stack.MySQLDBinaryPath))},
+			Env:        []string{"MYSQL_HOME=" + mysqlBaseDir},
 		})
 	} else {
 		a.stacks.SetConfig(stacks.ServiceMySQL, stacks.ServiceConfig{})
 	}
+}
+
+// mysqlBaseDirFromBinDir resolves the MySQL/MariaDB install root from
+// the mysqld.exe directory. Official layouts keep the binary in bin/
+// with share/ as a sibling of bin; --basedir must point at that root
+// or MariaDB cannot find its message files and refuses to start.
+func mysqlBaseDirFromBinDir(binDir string) string {
+	if strings.EqualFold(filepath.Base(binDir), "bin") {
+		return filepath.Dir(binDir)
+	}
+	return binDir
 }
 
 func (a *App) stackNginxConfPath() (string, error) {
@@ -1819,6 +1832,77 @@ func (a *App) InstallManagedPHP() (models.AppState, error) {
 		Source:    "stack",
 		Level:     "success",
 		Message:   fmt.Sprintf("PHP %s installed (php.ini: %s)", stacks.PHPVersionOf(dir), iniPath),
+	})
+	return a.RefreshState()
+}
+
+// InstallManagedNginx downloads Exposely's own nginx into the app
+// data dir and points the stack settings at it. Idempotent: a second
+// call is a no-op that just re-points the settings (useful after a
+// user manually cleared the path).
+func (a *App) InstallManagedNginx() (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "info",
+		Message:   fmt.Sprintf("Installing nginx %s to %s ...", stacks.NginxVersion, stacks.NginxInstallDir(a.appDataDir)),
+	})
+	_, exePath, err := stacks.InstallNginx(a.appDataDir)
+	if err != nil {
+		return models.AppState{}, err
+	}
+
+	settingsValue.Stack.NginxBinaryPath = exePath
+	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		return models.AppState{}, err
+	}
+	a.applyStackConfigs(settingsValue)
+
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "success",
+		Message:   "nginx installed: " + exePath,
+	})
+	return a.RefreshState()
+}
+
+// InstallManagedMariaDB downloads Exposely's own MariaDB into the app
+// data dir and points the stack settings at it. The data directory is
+// untouched: StartStackService initialises it when empty, and an
+// existing managed data dir (e.g. migrated from EnvKit) keeps its
+// databases.
+func (a *App) InstallManagedMariaDB() (models.AppState, error) {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return models.AppState{}, err
+	}
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "info",
+		Message:   fmt.Sprintf("Installing MariaDB %s to %s ...", stacks.MariaDBVersion, stacks.MariaDBInstallDir(a.appDataDir)),
+	})
+	_, exePath, err := stacks.InstallMariaDB(a.appDataDir)
+	if err != nil {
+		return models.AppState{}, err
+	}
+
+	settingsValue.Stack.MySQLDBinaryPath = exePath
+	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		return models.AppState{}, err
+	}
+	a.applyStackConfigs(settingsValue)
+
+	a.pushLog(models.LogEntry{
+		Timestamp: nowStamp(),
+		Source:    "stack",
+		Level:     "success",
+		Message:   "MariaDB installed: " + exePath,
 	})
 	return a.RefreshState()
 }

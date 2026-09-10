@@ -47,6 +47,8 @@ export const api = {
   stackStatus: (): Promise<StackServiceStatus[]> => (appBinding() as AppBindings & { StackStatus(): Promise<StackServiceStatus[]> }).StackStatus(),
   openDatabaseManager: (): Promise<string> => (appBinding() as AppBindings & { OpenDatabaseManager(): Promise<string> }).OpenDatabaseManager(),
   installManagedPHP: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedPHP(): Promise<AppState> }).InstallManagedPHP(),
+  installManagedNginx: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedNginx(): Promise<AppState> }).InstallManagedNginx(),
+  installManagedMariaDB: (): Promise<AppState> => (appBinding() as AppBindings & { InstallManagedMariaDB(): Promise<AppState> }).InstallManagedMariaDB(),
   savePHPConfig: (memoryLimit: string, uploadMax: string, postMax: string, maxExecTime: number, extraExts: string[]): Promise<AppState> =>
     (appBinding() as AppBindings & { SavePHPConfig(m: string, u: string, p: string, t: number, e: string[]): Promise<AppState> }).SavePHPConfig(memoryLimit, uploadMax, postMax, maxExecTime, extraExts),
   getPHPConfig: (): Promise<PHPConfigInfo> => (appBinding() as AppBindings & { GetPHPConfig(): Promise<PHPConfigInfo> }).GetPHPConfig(),

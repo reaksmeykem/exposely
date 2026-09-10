@@ -984,6 +984,8 @@ function render() {
                        <div class="action-row">
                          <button type="button" class="secondary" data-action="stack-start-all">${t('stackStartAll')}</button>
                          <button type="button" class="secondary" data-action="stack-stop-all">${t('stackStopAll')}</button>
+                         <button type="button" class="secondary" data-action="nginx-install" title="${t('nginxInstall')}">${t('nginxInstall')}</button>
+                         <button type="button" class="secondary" data-action="mariadb-install" title="${t('mariaDBInstall')}">${t('mariaDBInstall')}</button>
                        </div>
                      </div>
                      <form id="stack-form" class="form-grid">
@@ -1401,6 +1403,22 @@ async function handleAction(action: string, id: string | null) {
         state.appState = next;
         state.phpConfig = await api.getPHPConfig().catch(() => state.phpConfig);
         setNotice('success', t('phpInstallDone'));
+      }
+      return;
+    }
+    case 'nginx-install': {
+      const next = await withAction(t('nginxInstall'), () => api.installManagedNginx());
+      if (next) {
+        state.appState = next;
+        setNotice('success', t('nginxInstallDone'));
+      }
+      return;
+    }
+    case 'mariadb-install': {
+      const next = await withAction(t('mariaDBInstall'), () => api.installManagedMariaDB());
+      if (next) {
+        state.appState = next;
+        setNotice('success', t('mariaDBInstallDone'));
       }
       return;
     }
