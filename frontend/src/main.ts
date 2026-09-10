@@ -504,6 +504,23 @@ function restoreMainScroll(scrollTop: number) {
   scroller.scrollTop = Math.max(0, Math.min(scrollTop, max));
 }
 
+// captureProjectsScroll/restoreProjectsScroll do the same for the
+// sidebar's project list (.sidebar-projects-section), which scrolls
+// independently of the main content. Without this, every tunnel
+// status/log re-render snaps the list back to the top while the user
+// is scrolling through long project lists.
+function captureProjectsScroll(): number {
+  const list = root.querySelector<HTMLElement>('.sidebar-projects-section');
+  return list ? list.scrollTop : 0;
+}
+
+function restoreProjectsScroll(scrollTop: number) {
+  const list = root.querySelector<HTMLElement>('.sidebar-projects-section');
+  if (!list) return;
+  const max = list.scrollHeight - list.clientHeight;
+  list.scrollTop = Math.max(0, Math.min(scrollTop, max));
+}
+
 function render() {
   if (state.fatalError) {
     root.innerHTML = `
@@ -606,6 +623,7 @@ function render() {
   // when the tab did not change — explicit tab switches should land at the
   // top of the new tab so the user can see the page header.
   const previousScroll = captureMainScroll();
+  const previousProjectsScroll = captureProjectsScroll();
   const tabChanged = lastRenderedTab !== null && lastRenderedTab !== state.activeTab;
   lastRenderedTab = state.activeTab;
 
@@ -1098,6 +1116,11 @@ function render() {
     // they don't get yanked back to the top.
     restoreMainScroll(previousScroll);
   }
+  // The sidebar project list is identical on every tab and scrolls
+  // independently, so its position survives even tab switches — losing
+  // your place in a long list because you opened Settings and came back
+  // is exactly what we want to avoid.
+  restoreProjectsScroll(previousProjectsScroll);
 }
 
 function formValue(form: HTMLFormElement, name: string): string {
