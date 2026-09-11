@@ -12,7 +12,7 @@
     "info":  {
                  "companyName":  "Exposely",
                  "productName":  "Exposely",
-                 "productVersion":  "1.0.40",
+                 "productVersion":  "1.0.41",
                  "copyright":  "Copyright 2026",
                  "comments":  "Manage your Cloudflare Tunnels easily"
              },
