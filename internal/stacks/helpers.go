@@ -138,6 +138,22 @@ func PHPWorkerPorts(basePort, workers int) []int {
 	return ports
 }
 
+// PortAvailable reports whether a TCP port can be bound right now on
+// all interfaces. Used before asking nginx to `listen` on extra ports
+// (e.g. 80): nginx refuses to start when any listen address is taken,
+// so callers must probe first and skip occupied ports.
+func PortAvailable(port int) bool {
+	if port <= 0 || port > 65535 {
+		return false
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}
+
 // WaitForPort is a tiny readiness helper: it retries a TCP dial until the
 // deadline. Callers use it after Start so the UI does not report success
 // before nginx/mysqld actually bound their ports. It intentionally lives

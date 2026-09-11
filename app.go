@@ -111,24 +111,35 @@ func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
 				hasLocalhost = true
 			}
 		}
+		// Serve plain http://*.test (no port suffix) too by also
+		// listening on port 80 — but only when port 80 is actually
+		// free (EnvKit / Herd / IIS may own it). nginx refuses to
+		// start when any listen address is taken, so an occupied 80
+		// is skipped and retried on the next conf regeneration.
+		extraListens := []int{}
+		if stack.EffectiveNginxPort() != 80 && stacks.PortAvailable(80) {
+			extraListens = append(extraListens, 80)
+		}
 		if !hasLocalhost {
 			sites = append(sites, stacks.SiteConfig{
-				ServerName: "localhost",
-				Root:       filepath.Join(a.appDataDir, "stacks", "www"),
-				ListenPort: stack.EffectiveNginxPort(),
-				PHP:        usePHP,
-				PHPPort:    stack.EffectivePHPPort(),
-				Index:      []string{"index.html", "index.php"},
+				ServerName:       "localhost",
+				Root:             filepath.Join(a.appDataDir, "stacks", "www"),
+				ListenPort:       stack.EffectiveNginxPort(),
+				PHP:              usePHP,
+				PHPPort:          stack.EffectivePHPPort(),
+				ExtraListenPorts: extraListens,
+				Index:            []string{"index.html", "index.php"},
 			})
 		}
 		for _, entry := range registry.Sites {
 			sites = append(sites, stacks.SiteConfig{
-				ServerName: entry.ServerName,
-				Root:       entry.Root,
-				PHP:        usePHP && entry.PHP,
-				PHPPort:    stack.EffectivePHPPort(),
-				ListenPort: stack.EffectiveNginxPort(),
-				Index:      []string{"index.html", "index.php"},
+				ServerName:       entry.ServerName,
+				Root:             entry.Root,
+				PHP:              usePHP && entry.PHP,
+				PHPPort:          stack.EffectivePHPPort(),
+				ListenPort:       stack.EffectiveNginxPort(),
+				ExtraListenPorts: extraListens,
+				Index:            []string{"index.html", "index.php"},
 			})
 		}
 		confPath, err := a.stackNginxConfPath()
@@ -1854,9 +1865,18 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 	}
 	cfg.Tunnel = info.ID
 	cfg.CredentialsFile = info.CredentialsFile
-	originServiceURL, err := a.resolveReachableOriginServiceURL(project, settingsValue.DefaultServiceURL, a.localStackInfo(), settingsValue.InsecureSkipOriginTLS)
-	if err != nil {
-		return models.AppState{}, err
+	// Managed stack first: when Exposely's own nginx is configured it
+	// hosts the project vhost, so named tunnels must not fall back to
+	// legacy origin resolution (EnvKit / default service URL on 80).
+	var originServiceURL string
+	if managedOrigin, managed := a.ensureManagedVHost(project, settingsValue); managed {
+		originServiceURL = managedOrigin
+	} else {
+		var resolveErr error
+		originServiceURL, resolveErr = a.resolveReachableOriginServiceURL(project, settingsValue.DefaultServiceURL, a.localStackInfo(), settingsValue.InsecureSkipOriginTLS)
+		if resolveErr != nil {
+			return models.AppState{}, resolveErr
+		}
 	}
 	cloudflare.UpsertIngressRule(&cfg, cloudflare.IngressRule{
 		Hostname: hostname,

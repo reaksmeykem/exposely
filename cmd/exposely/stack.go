@@ -54,24 +54,32 @@ func (c *cliStackRunner) applyConfigs(settingsValue models.AppSettings) {
 				hasLocalhost = true
 			}
 		}
+		// Mirror the desktop app: also listen on port 80 when it is
+		// free, so plain http://*.test works without a port suffix.
+		extraListens := []int{}
+		if stack.EffectiveNginxPort() != 80 && stacks.PortAvailable(80) {
+			extraListens = append(extraListens, 80)
+		}
 		if !hasLocalhost {
 			sites = append(sites, stacks.SiteConfig{
-				ServerName: "localhost",
-				Root:       filepath.Join(c.appDataDir, "stacks", "www"),
-				ListenPort: stack.EffectiveNginxPort(),
-				PHP:        usePHP,
-				PHPPort:    stack.EffectivePHPPort(),
-				Index:      []string{"index.html", "index.php"},
+				ServerName:       "localhost",
+				Root:             filepath.Join(c.appDataDir, "stacks", "www"),
+				ListenPort:       stack.EffectiveNginxPort(),
+				PHP:              usePHP,
+				PHPPort:          stack.EffectivePHPPort(),
+				ExtraListenPorts: extraListens,
+				Index:            []string{"index.html", "index.php"},
 			})
 		}
 		for _, entry := range registry.Sites {
 			sites = append(sites, stacks.SiteConfig{
-				ServerName: entry.ServerName,
-				Root:       entry.Root,
-				PHP:        usePHP && entry.PHP,
-				PHPPort:    stack.EffectivePHPPort(),
-				ListenPort: stack.EffectiveNginxPort(),
-				Index:      []string{"index.html", "index.php"},
+				ServerName:       entry.ServerName,
+				Root:             entry.Root,
+				PHP:              usePHP && entry.PHP,
+				PHPPort:          stack.EffectivePHPPort(),
+				ListenPort:       stack.EffectiveNginxPort(),
+				ExtraListenPorts: extraListens,
+				Index:            []string{"index.html", "index.php"},
 			})
 		}
 		conf := stacks.RenderNginxConf(nginxRoot, stack.EffectiveNginxPort(), sites)

@@ -21,6 +21,11 @@ type SiteConfig struct {
 	PHPPort int
 	// ListenPort is the HTTP port nginx binds for this site.
 	ListenPort int
+	// ExtraListenPorts are additional ports this site should answer on
+	// (e.g. 80 so plain http://app.test works without a port suffix).
+	// Only emit ports the caller verified are bindable — nginx refuses
+	// to start when ANY listen address is taken.
+	ExtraListenPorts []int
 	// Index files for directory requests.
 	Index []string
 }
@@ -82,6 +87,11 @@ func writeServerBlock(b *strings.Builder, site SiteConfig, nginxRoot string) {
 
 	fmt.Fprintf(b, "    server {\n")
 	fmt.Fprintf(b, "        listen       %d;\n", listen)
+	for _, extra := range site.ExtraListenPorts {
+		if extra > 0 && extra != listen {
+			fmt.Fprintf(b, "        listen       %d;\n", extra)
+		}
+	}
 	fmt.Fprintf(b, "        server_name  %s;\n", serverName)
 	fmt.Fprintf(b, "        root         %s;\n", quotePath(root))
 	fmt.Fprintf(b, "        index        %s;\n", joinIndex(site.Index))
