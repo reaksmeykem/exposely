@@ -84,6 +84,10 @@ type managedProc struct {
 	cmd       *exec.Cmd
 	startedAt time.Time
 	lastError string
+	// desired is true while the user wants this service running. The
+	// supervisor only auto-restarts a child that exited while desired;
+	// an explicit Stop clears it so the restart loop stands down.
+	desired bool
 	// done is closed by the exit watcher when the child exits, so
 	// status can distinguish a live process from one that already
 	// died without blocking on Wait.
@@ -142,7 +146,14 @@ func (m *Manager) Config(service Service) (ServiceConfig, bool) {
 func (m *Manager) Start(service Service) Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.startLocked(service, 0)
+}
 
+// startLocked launches (or relaunches) the service; caller holds m.mu.
+// failures is the consecutive-crash count carried across restarts so a
+// crash-looping service keeps escalating its backoff and eventually
+// pauses instead of spinning forever.
+func (m *Manager) startLocked(service Service, failures int) Status {
 	cfg, ok := m.configs[service]
 	if !ok || filepath.Clean(cfg.BinaryPath) == "." || filepath.Clean(cfg.BinaryPath) == "" {
 		return m.setStatus(service, false, fmt.Sprintf("%s is not configured: set the binary path first", service))
@@ -177,16 +188,80 @@ func (m *Manager) Start(service Service) Status {
 	proc := &managedProc{
 		cmd:       cmd,
 		startedAt: time.Now(),
+		desired:   true,
 		done:      make(chan struct{}),
 	}
 	// Watch for child exit so status stays honest when a service dies
-	// after a successful launch (port clash, config error, crash).
-	go func(c *exec.Cmd, done chan struct{}) {
-		_ = c.Wait()
-		close(done)
-	}(cmd, proc.done)
+	// after a successful launch (port clash, config error, crash), and
+	// supervise: desired services are relaunched automatically.
+	go m.supervise(service, proc, failures)
 	m.procs[service] = proc
 	return m.statusLocked(service)
+}
+
+// restartBackoff caps how fast and how often a crash-looping service is
+// relaunched: 1s, 2s, 4s, 8s, then 8s forever. A service that stayed up
+// longer than stableAfter resets the counter, so one bad request (PHP
+// fatal error) recovers in ~1s while a broken binary does not spin.
+const (
+	firstRestartDelay = 1 * time.Second
+	maxRestartDelay   = 8 * time.Second
+	stableAfter       = 30 * time.Second
+)
+
+// supervise waits for the child to exit and, when the user still wants
+// the service running, relaunches it after a backoff. Each relaunch
+// spawns a fresh supervise; an explicit Stop is honoured at every step.
+func (m *Manager) supervise(service Service, proc *managedProc, failures int) {
+	waitErr := proc.cmd.Wait()
+	close(proc.done)
+
+	m.mu.Lock()
+	// Superseded by a newer generation (restart raced a Stop/SetConfig)?
+	if m.procs[service] != proc {
+		m.mu.Unlock()
+		return
+	}
+	if !proc.desired {
+		// Stopped on purpose — record clean stopped state.
+		delete(m.procs, service)
+		m.setStatus(service, false, "")
+		m.mu.Unlock()
+		return
+	}
+
+	// Unexpected exit while desired: backoff and relaunch.
+	if waitErr == nil || time.Since(proc.startedAt) >= stableAfter {
+		failures = 0
+	} else {
+		failures++
+	}
+	if failures > 6 {
+		delete(m.procs, service)
+		m.setStatus(service, false, fmt.Sprintf(
+			"%s exited %d times in a row — auto-restart paused. Fix the cause (check logs), then start it again",
+			service, failures))
+		m.mu.Unlock()
+		return
+	}
+	delay := firstRestartDelay << failures
+	if delay > maxRestartDelay {
+		delay = maxRestartDelay
+	}
+	m.setStatus(service, false, fmt.Sprintf("%s exited unexpectedly — restarting in %s (attempt %d)", service, delay, failures+1))
+	m.mu.Unlock()
+
+	go func() {
+		time.Sleep(delay)
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		// Stopped or replaced while we slept?
+		if m.procs[service] != proc || !proc.desired {
+			return
+		}
+		delete(m.procs, service)
+		m.startLocked(service, failures)
+	}()
 }
 
 // Stop terminates a running service gracefully. nginx is stopped via
@@ -199,9 +274,17 @@ func (m *Manager) Stop(service Service) Status {
 
 	p, ok := m.procs[service]
 	if !ok || !p.alive() {
+		// Clear desired so a pending auto-restart (backoff sleep) stands
+		// down instead of relaunching a service the user just stopped.
+		if ok {
+			p.desired = false
+		}
 		delete(m.procs, service)
 		return m.setStatus(service, false, "")
 	}
+	// Mark not-desired BEFORE killing: the supervisor fires when Wait
+	// returns and must not relaunch a process the user just stopped.
+	p.desired = false
 	// Release our wait handle first so the child does not linger as a
 	// zombie; then kill it. Ignore Kill errors — the process may already
 	// have exited on its own.
@@ -280,7 +363,7 @@ func (m *Manager) setStatus(service Service, running bool, errMsg string) Status
 }
 
 func pidOf(cmd *exec.Cmd) int {
-	if cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil {
 		return 0
 	}
 	return cmd.Process.Pid
