@@ -341,7 +341,13 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 		return nil
 	case <-time.After(quickTunnelStartupTimeout):
 		_ = m.StopTunnel()
-		return fmt.Errorf("timed out waiting for public URL after %s", quickTunnelStartupTimeout)
+		return fmt.Errorf(
+			"timed out waiting for public URL after %s. "+
+				"If the logs show 'Failed to initialize DNS' or 'argotunnel' timeouts, "+
+				"your DNS/VPN/firewall is blocking Cloudflare edge discovery — "+
+				"flush DNS, try 1.1.1.1, or disable the VPN/proxy and retry",
+			quickTunnelStartupTimeout,
+		)
 	}
 }
 
@@ -442,6 +448,14 @@ func (m *Manager) StreamPipe(source string, pipe io.ReadCloser, readyCh ...chan<
 		}
 		if strings.Contains(lower, "registered tunnel connection") || strings.Contains(lower, "connected") {
 			level = "success"
+		}
+		// cloudflared edge DNS failures are almost always a local resolver /
+		// VPN / firewall problem, not a tunnel misconfiguration. Surface an
+		// actionable hint instead of only dumping the raw log line.
+		if level == "error" && isEdgeDNSFailure(lower) {
+			line = line + " — DNS cannot resolve Cloudflare edge hosts (region*.v2.argotunnel.com). " +
+				"Try: disable VPN/proxy, flush DNS (ipconfig /flushdns), switch DNS to 1.1.1.1, " +
+				"or allow UDP/53 and HTTPS to Cloudflare. Then start the tunnel again."
 		}
 		m.pushLog(source, level, line)
 
@@ -734,4 +748,19 @@ func commandError(stderr string, err error) error {
 		return err
 	}
 	return fmt.Errorf("%s: %s", err.Error(), strings.TrimSpace(stderr))
+}
+
+// isEdgeDNSFailure reports whether a cloudflared log line is the local
+// resolver timing out on Cloudflare edge discovery
+// (e.g. "lookup region1.v2.argotunnel.com: i/o timeout").
+func isEdgeDNSFailure(lower string) bool {
+	if !strings.Contains(lower, "argotunnel") && !strings.Contains(lower, "dns") {
+		return false
+	}
+	return strings.Contains(lower, "timeout") ||
+		strings.Contains(lower, "i/o timeout") ||
+		strings.Contains(lower, "no such host") ||
+		strings.Contains(lower, "server misbehaving") ||
+		strings.Contains(lower, "temporary failure") ||
+		strings.Contains(lower, "failed to initialize dns")
 }

@@ -2,6 +2,7 @@ package stacks
 
 import (
 	"archive/zip"
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -188,7 +189,14 @@ func InstallPHPVersion(appDataDir, version string) (string, string, error) {
 	}
 	dir := PHPVersionDir(appDataDir, version)
 	if PHPDirHasBins(dir) {
-		return dir, PhpIniPath(dir), nil
+		// Idempotent path: still make sure a CA bundle exists so curl can
+		// verify HTTPS (cURL 60) even when the zip is already extracted.
+		EnsureCACert(dir)
+		iniPath := PhpIniPath(dir)
+		if _, err := os.Stat(iniPath); err == nil {
+			_ = EnsurePHPIniCASettings(iniPath, dir)
+		}
+		return dir, iniPath, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
@@ -215,13 +223,58 @@ func InstallPHPVersion(appDataDir, version string) (string, string, error) {
 		return "", "", fmt.Errorf("php %s archive did not contain php-cgi.exe/php.exe", version)
 	}
 
+	// Always try to place a CA bundle first so the generated php.ini can
+	// point curl/openssl at it (fixes cURL 60 on outbound HTTPS).
+	EnsureCACert(dir)
+
 	iniPath := PhpIniPath(dir)
 	if _, err := os.Stat(iniPath); err != nil {
 		if err := WriteFile(iniPath, PHPIniTemplate(dir)); err != nil {
 			return "", "", fmt.Errorf("write php.ini: %w", err)
 		}
+	} else {
+		// Existing installs may predate the CA settings; patch them in
+		// without wiping user tuning.
+		if err := EnsurePHPIniCASettings(iniPath, dir); err != nil {
+			return dir, iniPath, err
+		}
 	}
 	return dir, iniPath, nil
+}
+
+// EnsurePHPIniCASettings inserts or refreshes curl.cainfo / openssl.cafile
+// in an existing php.ini so outbound HTTPS works after a PHP upgrade that
+// did not rewrite the file. User values elsewhere are left untouched.
+func EnsurePHPIniCASettings(iniPath, phpDir string) error {
+	caPath := existingOrEmpty(filepath.Join(phpDir, CACertFileName))
+	if caPath == "" {
+		caPath = filepath.Join(phpDir, CACertFileName)
+	}
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	wantCainfo := "curl.cainfo = " + quoteIniPath(caPath)
+	wantCafile := "openssl.cafile = " + quoteIniPath(caPath)
+
+	if strings.Contains(content, "curl.cainfo") && strings.Contains(content, "openssl.cafile") {
+		return nil
+	}
+
+	var b strings.Builder
+	b.WriteString(content)
+	if !strings.HasSuffix(content, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n; CA bundle for curl/openssl HTTPS verification (added by Exposely)\n")
+	if !strings.Contains(content, "curl.cainfo") {
+		b.WriteString(wantCainfo + "\n")
+	}
+	if !strings.Contains(content, "openssl.cafile") {
+		b.WriteString(wantCafile + "\n")
+	}
+	return WriteFile(iniPath, b.String())
 }
 
 func downloadPHPZip(version string) (string, error) {
@@ -370,6 +423,68 @@ func PHPIniTemplate(phpDir string) string {
 	return PHPIniTemplateWith(phpDir, DefaultPHPIniSettings())
 }
 
+// CACertFileName is the CA bundle Exposely keeps next to each managed
+// PHP install so curl/openssl can verify HTTPS peers (Turnstile, mail
+// APIs, composer, …). Windows PHP builds do not ship a CA store.
+const CACertFileName = "cacert.pem"
+
+// CACertURL is the canonical Mozilla CA bundle used by curl.se and most
+// PHP Windows setups.
+const CACertURL = "https://curl.se/ca/cacert.pem"
+
+// EnsureCACert downloads cacert.pem into the PHP install directory when
+// it is missing. Returns the bundle path (always under phpDir) or an
+// empty string when the download failed and no bundle is present yet.
+func EnsureCACert(phpDir string) string {
+	path := filepath.Join(phpDir, CACertFileName)
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		return path
+	}
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(CACertURL)
+	if err != nil {
+		return existingOrEmpty(path)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return existingOrEmpty(path)
+	}
+
+	tmp, err := os.CreateTemp(phpDir, "cacert-*.tmp")
+	if err != nil {
+		return existingOrEmpty(path)
+	}
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return existingOrEmpty(path)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return existingOrEmpty(path)
+	}
+	// Only accept a plausible PEM bundle so a captive portal HTML page
+	// never becomes the CA store.
+	data, err := os.ReadFile(tmp.Name())
+	if err != nil || !bytes.Contains(data, []byte("BEGIN CERTIFICATE")) {
+		os.Remove(tmp.Name())
+		return existingOrEmpty(path)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return existingOrEmpty(path)
+	}
+	return path
+}
+
+func existingOrEmpty(path string) string {
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		return path
+	}
+	return ""
+}
+
 // PHPIniTemplateWith renders php.ini honouring the supplied settings.
 // Extension lines are only emitted when the DLL exists in the ext dir,
 // so enabling an extension whose file is missing cannot stop PHP from
@@ -381,6 +496,21 @@ func PHPIniTemplateWith(phpDir string, s PHPIniSettings) string {
 	fmt.Fprintf(&b, "; Generated by Exposely — safe to edit by hand; the\n")
 	fmt.Fprintf(&b, "; UI regenerates it when you save PHP settings.\n\n")
 	fmt.Fprintf(&b, "extension_dir = %s\n", quoteIniPath(extDir))
+
+	// Windows PHP has no built-in CA store. Without curl.cainfo /
+	// openssl.cafile every outbound HTTPS call from PHP (Laravel HTTP
+	// client, Guzzle, Turnstile siteverify, composer) fails with
+	// "SSL certificate problem: unable to get local issuer certificate".
+	caPath := filepath.Join(phpDir, CACertFileName)
+	if existingOrEmpty(caPath) != "" {
+		fmt.Fprintf(&b, "\n; CA bundle for curl/openssl HTTPS verification\n")
+		fmt.Fprintf(&b, "curl.cainfo = %s\n", quoteIniPath(caPath))
+		fmt.Fprintf(&b, "openssl.cafile = %s\n", quoteIniPath(caPath))
+	} else {
+		fmt.Fprintf(&b, "\n; CA bundle missing — run Install PHP again or place cacert.pem here:\n")
+		fmt.Fprintf(&b, "; curl.cainfo = %s\n", quoteIniPath(caPath))
+		fmt.Fprintf(&b, "; openssl.cafile = %s\n", quoteIniPath(caPath))
+	}
 
 	memory := iniOr(s.MemoryLimit, "256M")
 	upload := iniOr(s.UploadMaxFilesize, "64M")

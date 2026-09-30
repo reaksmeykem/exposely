@@ -1,4 +1,4 @@
-﻿package stacks
+package stacks
 
 import (
 	"os"
@@ -149,6 +149,11 @@ func TestPHPIniTemplateBaseline(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Plant a fake CA bundle so the template emits active (not commented)
+	// curl.cainfo / openssl.cafile lines.
+	if err := os.WriteFile(filepath.Join(phpDir, CACertFileName), []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ini := PHPIniTemplateWith(phpDir, PHPIniSettings{
 		MemoryLimit:       "512M",
@@ -166,6 +171,10 @@ func TestPHPIniTemplateBaseline(t *testing.T) {
 		"extension = php_mysqli.dll",
 		// soap DLL absent -> commented out, never active
 		"; extension = php_soap.dll",
+		// Windows PHP has no CA store — curl/openssl must get an explicit
+		// bundle or outbound HTTPS (Turnstile, Guzzle) fails with cURL 60.
+		"curl.cainfo =",
+		"openssl.cafile =",
 	} {
 		if !strings.Contains(ini, want) {
 			t.Fatalf("php.ini missing %q:\n%s", want, ini)
@@ -173,6 +182,36 @@ func TestPHPIniTemplateBaseline(t *testing.T) {
 	}
 	if strings.Contains(ini, "\nextension = php_soap.dll") {
 		t.Fatal("missing DLL must not be activated")
+	}
+}
+
+func TestEnsurePHPIniCASettingsPatchesExistingIni(t *testing.T) {
+	phpDir := t.TempDir()
+	iniPath := PhpIniPath(phpDir)
+	if err := WriteFile(iniPath, "memory_limit = 128M\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePHPIniCASettings(iniPath, phpDir); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "memory_limit = 128M") {
+		t.Fatalf("user settings wiped:\n%s", got)
+	}
+	if !strings.Contains(got, "curl.cainfo") || !strings.Contains(got, "openssl.cafile") {
+		t.Fatalf("CA settings not injected:\n%s", got)
+	}
+	// Idempotent.
+	if err := EnsurePHPIniCASettings(iniPath, phpDir); err != nil {
+		t.Fatalf("second patch: %v", err)
+	}
+	data2, _ := os.ReadFile(iniPath)
+	if strings.Count(string(data2), "curl.cainfo") != 1 {
+		t.Fatalf("duplicate curl.cainfo lines:\n%s", data2)
 	}
 }
 

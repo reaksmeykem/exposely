@@ -223,6 +223,28 @@ func TestNormalizeShareModePreservesStableAndRandom(t *testing.T) {
 	if got := normalizeShareMode(models.ShareModeStable); got != models.ShareModeStable {
 		t.Fatalf("expected stable mode to be preserved, got %q", got)
 	}
+
+	// .test / local-host apps can use fixed or random public URLs without
+	// a project folder — only Local host is required.
+	if err := validateProjectSource(models.ProjectPreset{
+		ShareMode: models.ShareModeStable,
+		LocalHost: "app.test",
+		Subdomain: "my-app",
+	}); err != nil {
+		t.Fatalf("stable + local host should validate: %v", err)
+	}
+	if err := validateProjectSource(models.ProjectPreset{
+		ShareMode: models.ShareModeRandomDomain,
+		LocalHost: "app.test",
+	}); err != nil {
+		t.Fatalf("random-domain + local host should validate: %v", err)
+	}
+	if err := validateProjectSource(models.ProjectPreset{
+		ShareMode: models.ShareModeStable,
+		LocalHost: "app.test",
+	}); err == nil {
+		t.Fatal("stable without subdomain should fail")
+	}
 	if got := normalizeShareMode(models.ShareModeRandomDomain); got != models.ShareModeRandomDomain {
 		t.Fatalf("expected random-domain mode to be preserved, got %q", got)
 	}

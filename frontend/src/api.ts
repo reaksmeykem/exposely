@@ -25,6 +25,8 @@ export const api = {
   deleteProject: (id: string): Promise<AppState> => appBinding().DeleteProject(id),
   shareProject: (id: string): Promise<AppState> => appBinding().ShareProject(id),
   shareProjectWithRandomURL: (id: string): Promise<AppState> => appBinding().ShareProjectWithRandomURL(id),
+  shareProjectFixedURL: (id: string): Promise<AppState> =>
+    (appBinding() as AppBindings & { ShareProjectFixedURL(id: string): Promise<AppState> }).ShareProjectFixedURL(id),
   startQuickTunnel: (id: string): Promise<AppState> => appBinding().StartQuickTunnel(id),
   startTunnel: (): Promise<AppState> => appBinding().StartTunnel(),
   stopTunnel: (): Promise<AppState> => appBinding().StopTunnel(),

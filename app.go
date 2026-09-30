@@ -1524,6 +1524,21 @@ func (a *App) ShareProjectWithRandomURL(projectID string) (models.AppState, erro
 	return a.shareProjectThroughNamedTunnel(settingsValue, project, true)
 }
 
+// ShareProjectFixedURL starts a named tunnel with the project's stable
+// subdomain so the public address stays the same across restarts. Used
+// by the UI's "Start (fixed URL)" action. Requires Local host (e.g.
+// app.test), a subdomain, and a Default domain in Settings.
+func (a *App) ShareProjectFixedURL(projectID string) (models.AppState, error) {
+	if err := a.requireAdmin(); err != nil {
+		return models.AppState{}, err
+	}
+	settingsValue, project, err := a.loadProject(projectID)
+	if err != nil {
+		return models.AppState{}, err
+	}
+	return a.shareProjectThroughNamedTunnel(settingsValue, project, false)
+}
+
 func (a *App) StartQuickTunnel(projectID string) (models.AppState, error) {
 	_, project, err := a.loadProject(projectID)
 	if err != nil {
@@ -1852,7 +1867,14 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 
 	hostname, fullURL := a.resolveHostname(project, settingsValue.DefaultDomain, useRandom)
 	if hostname == "" {
-		return models.AppState{}, errors.New("subdomain is required for stable or random-domain sharing")
+		if !useRandom && strings.TrimSpace(project.Subdomain) == "" {
+			return models.AppState{}, errors.New("subdomain is required for a fixed public URL. Set one on the project (e.g. my-app)")
+		}
+		domain := strings.TrimSpace(settingsValue.DefaultDomain)
+		if domain == "" || domain == "example.com" {
+			return models.AppState{}, errors.New("set Default domain in Settings to your Cloudflare domain (e.g. yourdomain.com) before using fixed or random named URLs. Quick tunnel (random trycloudflare.com) works without a domain")
+		}
+		return models.AppState{}, errors.New("subdomain and Default domain are required for stable or random-domain sharing")
 	}
 
 	if err := a.manager.RouteDNS(path, settingsValue.TunnelName, hostname); err != nil {
@@ -2204,6 +2226,9 @@ func (a *App) SavePHPConfig(memoryLimit, uploadMaxFilesize, postMaxSize string, 
 		ExtraExtensions:   settingsValue.Stack.PHPExtraExtensions,
 	}
 	iniPath := stacks.PhpIniPath(phpDir)
+	// Keep a CA bundle beside PHP so regenerated php.ini can point curl
+	// and openssl at it (avoids cURL 60 on Turnstile / external HTTPS).
+	stacks.EnsureCACert(phpDir)
 	if err := stacks.WriteFile(iniPath, stacks.PHPIniTemplateWith(phpDir, s)); err != nil {
 		return models.AppState{}, err
 	}
@@ -3021,11 +3046,15 @@ func (a *App) resolveHostname(project models.ProjectPreset, domain string, useRa
 func (a *App) updateProjectShare(settingsValue models.AppSettings, projectID, subdomain, fullURL string) models.AppSettings {
 	for i := range settingsValue.Projects {
 		if settingsValue.Projects[i].ID == projectID {
-			if normalizeShareMode(settingsValue.Projects[i].ShareMode) == models.ShareModeStable ||
-				normalizeShareMode(settingsValue.Projects[i].ShareMode) == models.ShareModeRandomDomain {
+			// Persist named-tunnel URLs for every share mode that can use
+			// them (fixed and random), including one-shot "Start (fixed)"
+			// from a quick/auto project.
+			mode := normalizeShareMode(settingsValue.Projects[i].ShareMode)
+			if mode == models.ShareModeStable || mode == models.ShareModeRandomDomain ||
+				mode == models.ShareModeQuick || mode == models.ShareModeAuto {
 				settingsValue.Projects[i].PublicURL = fullURL
 			}
-			if normalizeShareMode(settingsValue.Projects[i].ShareMode) == models.ShareModeStable {
+			if strings.TrimSpace(subdomain) != "" {
 				settingsValue.Projects[i].Subdomain = subdomain
 			}
 			break
@@ -3081,6 +3110,15 @@ func validateProjectSource(input models.ProjectPreset) error {
 	case models.ShareModeHostHTML:
 		if strings.TrimSpace(input.ProjectPath) == "" && strings.TrimSpace(input.LocalURL) == "" {
 			return errors.New("HTML mode requires a project folder or local URL")
+		}
+	case models.ShareModeStable, models.ShareModeRandomDomain:
+		// .test / local-host apps (EnvKit, Herd, managed nginx) only need
+		// a Host header; a folder is optional for pure local-host setups.
+		if strings.TrimSpace(input.LocalHost) == "" && strings.TrimSpace(input.ProjectPath) == "" && strings.TrimSpace(input.LocalURL) == "" {
+			return errors.New("fixed/random URL mode requires a local host (e.g. app.test), project folder, or local URL")
+		}
+		if normalizeShareMode(input.ShareMode) == models.ShareModeStable && strings.TrimSpace(input.Subdomain) == "" {
+			return errors.New("subdomain is required for a fixed public URL")
 		}
 	default:
 		if strings.TrimSpace(input.ProjectPath) == "" {

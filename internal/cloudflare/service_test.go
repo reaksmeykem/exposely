@@ -60,6 +60,24 @@ func TestQuickTunnelArgsDoNotUseUnsupportedFlags(t *testing.T) {
 	}
 }
 
+func TestIsEdgeDNSFailure(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{`Failed to initialize DNS local resolver error="lookup region1.v2.argotunnel.com: i/o timeout"`, true},
+		{`lookup region1.v2.argotunnel.com: no such host`, true},
+		{`Registered tunnel connection connIndex=0`, false},
+		{`ERR Failed to connect to edge`, false},
+		{`error="lookup example.com: i/o timeout"`, false},
+	}
+	for _, tc := range cases {
+		if got := isEdgeDNSFailure(tc.in); got != tc.want {
+			t.Fatalf("isEdgeDNSFailure(%q)=%v want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestQuickTunnelArgsAddsNoTLSVerifyWhenOptedIn(t *testing.T) {
 	args := quickTunnelArgs("https://127.0.0.1:443", "kig.test", QuickTunnelOptions{InsecureSkipOriginTLS: true})
 

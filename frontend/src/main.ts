@@ -165,6 +165,8 @@ function formatProjectURL(project: ProjectPreset, domain: string): string {
 }
 
 function usesEphemeralURL(project: ProjectPreset): boolean {
+  // trycloudflare quick tunnels and HTML shares get a new address each
+  // start. Fixed / random-domain named-tunnel URLs are persisted.
   return project.shareMode === 'auto' || project.shareMode === 'quick' || project.shareMode === 'host-html';
 }
 
@@ -191,13 +193,22 @@ function resolvedProjectURL(project: ProjectPreset, appState: AppState): string 
 }
 
 function shareActionForProject(project: ProjectPreset): { action: string; label: string } {
+  const domain = state.appState?.settings.defaultDomain ?? '';
+  const canNamed = isMeaningfulDomain(domain);
   switch (project.shareMode) {
     case 'auto':
       return { action: 'share-quick', label: t('startAutoShare') };
-    case 'quick':
-      return { action: 'share-quick', label: t('createPublicUrl') };
+    case 'stable':
+      return canNamed
+        ? { action: 'share-fixed', label: t('startFixedUrl') }
+        : { action: 'share-quick', label: t('createPublicUrl') };
+    case 'random-domain':
+      return canNamed
+        ? { action: 'share-random', label: t('startRandomUrl') }
+        : { action: 'share-quick', label: t('createPublicUrl') };
     case 'host-html':
       return { action: 'share-quick', label: t('createHtmlUrl') };
+    case 'quick':
     default:
       return { action: 'share-quick', label: t('createPublicUrl') };
   }
@@ -230,6 +241,10 @@ function projectTypeLabel(project: ProjectPreset): string {
       return t('autoProject');
     case 'host-html':
       return t('htmlProject');
+    case 'stable':
+      return t('fixedPublicUrl');
+    case 'random-domain':
+      return t('randomPublicUrl');
     default:
       return t('localHostProject');
   }
@@ -521,7 +536,88 @@ function restoreProjectsScroll(scrollTop: number) {
   list.scrollTop = Math.max(0, Math.min(scrollTop, max));
 }
 
+// Tunnel status / log events fire every few seconds while cloudflared is
+// running. A full re-render rebuilds the DOM from saved settings and
+// would wipe anything the user has typed but not yet saved. Capture
+// live form field values before innerHTML is replaced and put them back
+// after, so Settings can be edited while a tunnel is live.
+type FormSnapshot = Record<string, string>;
+
+interface FocusSnapshot {
+  formKey: string;
+  name: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+}
+
+function captureFormSnapshot(): { fields: FormSnapshot; focus: FocusSnapshot | null } {
+  const fields: FormSnapshot = {};
+  let focus: FocusSnapshot | null = null;
+  for (const form of root.querySelectorAll<HTMLFormElement>('form')) {
+    for (const el of Array.from(form.elements)) {
+      const input = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+      const name = input.name;
+      if (!name) continue;
+      const key = `${form.id || form.className}::${name}`;
+      if (input instanceof HTMLInputElement && (input.type === 'checkbox' || input.type === 'radio')) {
+        if (input.type === 'radio' && !input.checked) continue;
+        fields[key] = input.checked ? '1' : '';
+        continue;
+      }
+      fields[key] = input.value;
+      if (document.activeElement === input) {
+        const start = 'selectionStart' in input ? input.selectionStart : null;
+        const end = 'selectionEnd' in input ? input.selectionEnd : null;
+        focus = {
+          formKey: form.id || form.className,
+          name,
+          selectionStart: typeof start === 'number' ? start : null,
+          selectionEnd: typeof end === 'number' ? end : null,
+        };
+      }
+    }
+  }
+  return { fields, focus };
+}
+
+function restoreFormSnapshot(snap: { fields: FormSnapshot; focus: FocusSnapshot | null }) {
+  if (!snap?.fields || Object.keys(snap.fields).length === 0) return;
+  let focused: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null = null;
+  for (const form of root.querySelectorAll<HTMLFormElement>('form')) {
+    for (const el of Array.from(form.elements)) {
+      const input = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+      const name = input.name;
+      if (!name) continue;
+      const key = `${form.id || form.className}::${name}`;
+      if (!(key in snap.fields)) continue;
+      const value = snap.fields[key];
+      if (input instanceof HTMLInputElement && (input.type === 'checkbox' || input.type === 'radio')) {
+        input.checked = value === '1';
+        continue;
+      }
+      input.value = value;
+      if (snap.focus && (form.id || form.className) === snap.focus.formKey && name === snap.focus.name) {
+        focused = input;
+      }
+    }
+  }
+  const focusInfo = snap.focus;
+  if (focused && focusInfo) {
+    focused.focus();
+    const input = focused as HTMLInputElement | HTMLTextAreaElement;
+    if (focusInfo.selectionStart != null && 'setSelectionRange' in input) {
+      try {
+        input.setSelectionRange(focusInfo.selectionStart, focusInfo.selectionEnd ?? focusInfo.selectionStart);
+      } catch {
+        // Some input types (number) reject setSelectionRange — ignore.
+      }
+    }
+  }
+}
+
 function render() {
+  const formSnap = captureFormSnapshot();
+
   if (state.fatalError) {
     root.innerHTML = `
       <main class="shell loading-state">
@@ -557,6 +653,7 @@ function render() {
   const projectUrl = project ? resolvedProjectURL(project, appState) : '';
   const hasProjects = appState.settings.projects.length > 0;
   const shareToolReady = appState.cloudflaredDetected;
+  const hasDomain = isMeaningfulDomain(appState.settings.defaultDomain);
   const stackConfigured = !!(appState.settings.stack && (appState.settings.stack.nginxBinaryPath || appState.settings.stack.phpCgiBinaryPath || appState.settings.stack.mysqldBinaryPath));
   const stackRunningCount = state.stackStatuses.filter((s) => s.running).length;
   const stackTotalCount = state.stackStatuses.length || 3;
@@ -566,11 +663,15 @@ function render() {
     project
       && shareAction
       && shareToolReady
-      && (project.shareMode === 'auto' || project.shareMode === 'quick' || project.shareMode === 'host-html'),
+      && (project.shareMode === 'auto' ||
+          project.shareMode === 'quick' ||
+          project.shareMode === 'host-html' ||
+          project.shareMode === 'stable' ||
+          project.shareMode === 'random-domain'),
   );
   const canStartTunnel = project ? canShareSelectedProject : shareToolReady && hasProjects;
   const canRunProjectBuild = Boolean(project?.projectPath.trim()) && !looksLikeURL(project?.projectPath ?? '') && appState.buildCommandDetected && !appState.buildRunning;
-  const canTestProject = Boolean(project?.localHost.trim()) && project?.shareMode !== 'host-html' && project?.shareMode !== 'auto';
+  const canTestProject = Boolean(project?.localHost.trim()) && project?.shareMode !== 'host-html';
   const shareToolStatusLabel = shareToolReady ? t('installed') : t('notInstalled');
   const shareToolStatusBadgeClass = shareToolReady ? 'pill-success' : 'pill-outline';
   const shareToolStatusMessage = shareToolReady
@@ -789,11 +890,39 @@ function render() {
                     <select name="shareMode">
                       <option value="auto" ${state.editorProject.shareMode === 'auto' ? 'selected' : ''}>${t('autoDetectProject')}</option>
                       <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>${t('localHostProjectOption')}</option>
+                      ${hasDomain ? `<option value="stable" ${state.editorProject.shareMode === 'stable' ? 'selected' : ''}>${t('fixedPublicUrlOption')}</option>
+                      <option value="random-domain" ${state.editorProject.shareMode === 'random-domain' ? 'selected' : ''}>${t('randomPublicUrlOption')}</option>` : ''}
                       <option value="host-html" ${state.editorProject.shareMode === 'host-html' ? 'selected' : ''}>${t('htmlProjectOption')}</option>
                     </select>
                   </label>
                   ${
-                    state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto'
+                    !hasDomain
+                      ? `<p class="hint wide">${escapeHtml(t('noDomainBody'))}</p>`
+                      : ''
+                  }
+                  ${
+                    hasDomain && (state.editorProject.shareMode === 'stable' || state.editorProject.shareMode === 'random-domain')
+                      ? `
+                      <label>${t('urlType')}
+                        <select name="urlType" disabled>
+                          <option>${state.editorProject.shareMode === 'stable' ? t('fixedPublicUrl') : t('randomPublicUrl')}</option>
+                        </select>
+                      </label>
+                      ${
+                        state.editorProject.shareMode === 'stable'
+                          ? `<label>${t('subdomain')}<input name="subdomain" value="${escapeHtml(state.editorProject.subdomain)}" placeholder="${t('subdomainPlaceholder')}" required /></label>`
+                          : `<label>${t('subdomain')}<input name="subdomain" value="${escapeHtml(state.editorProject.subdomain)}" placeholder="${t('subdomainPlaceholder')}" /></label>`
+                      }
+                      <p class="hint wide">${escapeHtml(state.editorProject.shareMode === 'stable' ? t('fixedPublicUrlHint') : t('randomPublicUrlHint'))} ${t('defaultDomainHint')}</p>
+                      <p class="hint wide">${t('localHostTestHint')}</p>
+                      `
+                      : ''
+                  }
+                  ${
+                    state.editorProject.shareMode === 'quick' ||
+                    state.editorProject.shareMode === 'auto' ||
+                    state.editorProject.shareMode === 'stable' ||
+                    state.editorProject.shareMode === 'random-domain'
                       ? `<label>${state.editorProject.shareMode === 'auto' ? t('localHostOptional') : t('localHostRequired')}<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="app.test" /></label>`
                       : ''
                   }
@@ -803,7 +932,10 @@ function render() {
                       : ''
                   }
                   ${
-                    state.editorProject.shareMode === 'quick' || state.editorProject.shareMode === 'auto'
+                    state.editorProject.shareMode === 'quick' ||
+                    state.editorProject.shareMode === 'auto' ||
+                    state.editorProject.shareMode === 'stable' ||
+                    state.editorProject.shareMode === 'random-domain'
                       ? `<label>${t('originUrl')}<input name="originURL" value="${escapeHtml(state.editorProject.originURL)}" placeholder="http://127.0.0.1:80" /></label>`
                       : ''
                   }
@@ -908,6 +1040,24 @@ function render() {
                                 ${t('refreshUrl')}
                               </button>` : ''}
                             </div>
+                            <div class="action-row" style="margin-top: 12px; flex-wrap: wrap; gap: 8px;">
+                              ${
+                                hasDomain
+                                  ? `
+                              <button type="button" class="secondary" data-action="share-fixed" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('fixedPublicUrlHint'))}">
+                                ${t('startFixedUrl')}
+                              </button>
+                              <button type="button" class="secondary" data-action="share-random" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('randomPublicUrlHint'))}">
+                                ${t('startRandomUrl')}
+                              </button>
+                                  `
+                                  : `<span class="pill pill-outline" title="${escapeHtml(t('noDomainFixedDisabled'))}">${t('randomOnlyBadge')}</span>`
+                              }
+                              <button type="button" class="secondary" data-action="share-quick" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('randomPublicUrlHint'))}">
+                                ${t('createPublicUrl')}
+                              </button>
+                            </div>
+                            <p class="hint" style="margin-top: 8px;">${escapeHtml(hasDomain ? t('localHostTestHint') : t('noDomainBody'))}</p>
                           </div>
                         </div>
 
@@ -1109,6 +1259,7 @@ function render() {
   `;
 
   bindForms();
+  restoreFormSnapshot(formSnap);
 
   if (!tabChanged) {
     // Re-rendering on the same tab (e.g. after Save Settings, Refresh, or
@@ -1180,7 +1331,7 @@ function syncEditorFromForm() {
   if (!projectForm) return;
 
   const shareModeValue = formValue(projectForm, 'shareMode') as ShareMode;
-  const validShareModes: ShareMode[] = ['auto', 'quick', 'host-html'];
+  const validShareModes: ShareMode[] = ['auto', 'quick', 'host-html', 'stable', 'random-domain'];
   const shareMode = validShareModes.includes(shareModeValue) ? shareModeValue : 'auto';
   const projectPath = formValue(projectForm, 'projectPath');
   const localURL = formValue(projectForm, 'localURL');
@@ -1345,6 +1496,10 @@ function bindForms() {
       publicURL: state.editorProject.publicURL,
       shareMode: state.editorProject.shareMode,
     };
+    if (payload.shareMode === 'stable' && !payload.subdomain.trim()) {
+      setNotice('error', t('subdomainRequired'));
+      return;
+    }
     const next = await withAction(t('saveProject'), () => api.saveProject(payload));
     if (!next) return;
 
@@ -1606,7 +1761,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
     }
   }
 
-  if (!id && ['share-project', 'share-random', 'share-quick', 'regenerate-url', 'open-url', 'npm-build', 'test-project', 'delete-project'].includes(action)) {
+  if (!id && ['share-project', 'share-random', 'share-quick', 'share-fixed', 'regenerate-url', 'open-url', 'npm-build', 'test-project', 'delete-project'].includes(action)) {
     setNotice('error', t('selectProjectFirst'));
     return;
   }
@@ -1746,7 +1901,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
         state.appState = stopped;
         state.activeProjectId = null;
       }
-      const next = await withAction(t('createPublicUrl'), () => api.shareProjectWithRandomURL(id!));
+      const next = await withAction(t('startRandomUrl'), () => api.shareProjectWithRandomURL(id!));
       if (next) {
         state.appState = next;
         state.activeProjectId = id!;
@@ -1757,6 +1912,28 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
           }
         }
         setNotice('success', t('randomDomainActive'));
+      }
+      return;
+    }
+    case 'share-fixed': {
+      if (!(await confirmProjectSwitch(id!))) return;
+      if (state.appState?.status.running && state.activeProjectId && state.activeProjectId !== id) {
+        const stopped = await withAction(t('stop'), () => api.stopTunnel());
+        if (!stopped) return;
+        state.appState = stopped;
+        state.activeProjectId = null;
+      }
+      const next = await withAction(t('startFixedUrl'), () => api.shareProjectFixedURL(id!));
+      if (next) {
+        state.appState = next;
+        state.activeProjectId = id!;
+        if (next.settings.projects) {
+          const savedProject = next.settings.projects.find((project) => project.id === id);
+          if (savedProject?.publicURL) {
+            state.projectUrls[id!] = savedProject.publicURL;
+          }
+        }
+        setNotice('success', t('projectShared'));
       }
       return;
     }
