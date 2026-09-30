@@ -318,6 +318,7 @@ label {
   height: 16px;
   display: block;
   border-radius: 3px;
+  object-fit: cover;
 }
 
 .status-indicator {

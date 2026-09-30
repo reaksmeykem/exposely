@@ -1,6 +1,7 @@
 import './style.css';
 import { api } from './api';
 import { t, setLang, getLang } from './i18n';
+import khFlagUrl from './kh.png';
 import { WindowCenter, WindowIsMaximised, WindowSetMinSize, WindowSetSize, WindowUnmaximise } from '../wailsjs/runtime/runtime';
 import type { AppState, LogEntry, PHPConfigInfo, ProjectPreset, ShareMode, StackServiceStatus, TunnelStatus } from './types';
 
@@ -109,11 +110,14 @@ function escapeHtml(value: string): string {
 function languageFlagIcon(lang: string): string {
   if (lang === 'km') {
     return `
-      <svg class="flag-icon" viewBox="0 0 36 24" role="img" aria-label="Khmer flag" xmlns="http://www.w3.org/2000/svg">
-        <rect width="36" height="24" rx="3" fill="#032ea1"/>
-        <rect y="6" width="36" height="12" fill="#e00025"/>
-        <path d="M12 16.4h12v1.3H12v-1.3Zm1-1.5h10v1.1H13v-1.1Zm1.2-2.6h7.6v2.2h-7.6v-2.2Zm1.1-2h1.3v1.7h-1.3v-1.7Zm2.1-.9h1.2V12h-1.2V9.4Zm2 .9h1.3V12h-1.3v-1.7Zm-4.8 1.2h6.8l-3.4-2.7-3.4 2.7Z" fill="#fff"/>
-      </svg>
+      <img
+        class="flag-icon"
+        src="${khFlagUrl}"
+        width="24"
+        height="16"
+        alt="Khmer flag"
+        draggable="false"
+      />
     `;
   }
 
@@ -896,11 +900,6 @@ function render() {
                     </select>
                   </label>
                   ${
-                    !hasDomain
-                      ? `<p class="hint wide">${escapeHtml(t('noDomainBody'))}</p>`
-                      : ''
-                  }
-                  ${
                     hasDomain && (state.editorProject.shareMode === 'stable' || state.editorProject.shareMode === 'random-domain')
                       ? `
                       <label>${t('urlType')}
@@ -1051,13 +1050,12 @@ function render() {
                                 ${t('startRandomUrl')}
                               </button>
                                   `
-                                  : `<span class="pill pill-outline" title="${escapeHtml(t('noDomainFixedDisabled'))}">${t('randomOnlyBadge')}</span>`
+                                  : ''
                               }
                               <button type="button" class="secondary" data-action="share-quick" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('randomPublicUrlHint'))}">
                                 ${t('createPublicUrl')}
                               </button>
                             </div>
-                            <p class="hint" style="margin-top: 8px;">${escapeHtml(hasDomain ? t('localHostTestHint') : t('noDomainBody'))}</p>
                           </div>
                         </div>
 
