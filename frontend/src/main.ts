@@ -290,6 +290,30 @@ function selectedProject(): ProjectPreset | null {
   return projects.find((project) => project.id === state.selectedProjectId) ?? projects[0];
 }
 
+const SELECTED_PROJECT_KEY = 'exposely.selectedProjectId';
+
+function rememberSelectedProject(id: string | null) {
+  try {
+    if (id) {
+      window.localStorage.setItem(SELECTED_PROJECT_KEY, id);
+    } else {
+      window.localStorage.removeItem(SELECTED_PROJECT_KEY);
+    }
+  } catch {
+    // WebView storage can be unavailable; remembering is a convenience.
+  }
+}
+
+function rememberedProjectId(projects: ProjectPreset[]): string | null {
+  try {
+    const stored = window.localStorage.getItem(SELECTED_PROJECT_KEY);
+    if (stored && projects.some((project) => project.id === stored)) return stored;
+  } catch {
+    // Ignore and fall back to the first project.
+  }
+  return null;
+}
+
 function syncProjectUrlsFromState(appState: AppState) {
   for (const project of appState.settings.projects) {
     if (usesEphemeralURL(project)) {
@@ -1554,6 +1578,7 @@ function bindForms() {
     state.appState = next;
     const savedProjectId = payload.id || (next.settings.projects[next.settings.projects.length - 1]?.id ?? null);
     state.selectedProjectId = savedProjectId;
+    rememberSelectedProject(savedProjectId);
     state.editorOpen = false;
     setNotice('success', t('projectSaved'));
   });
@@ -1607,6 +1632,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       return;
     case 'select-project':
       state.selectedProjectId = id ?? null;
+      rememberSelectedProject(state.selectedProjectId);
       state.projectMenuOpen = false;
       render();
       return;
@@ -2053,6 +2079,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
         if (next) {
           state.appState = next;
           state.selectedProjectId = next.settings.projects[0]?.id ?? null;
+          rememberSelectedProject(state.selectedProjectId);
           state.projectMenuOpen = false;
           setNotice('success', t('projectDeleted'));
         }
@@ -2110,7 +2137,7 @@ async function bootstrap() {
   setLang(next.settings.language || 'en');
   setTheme(next.settings.theme || 'dark');
   syncProjectUrlsFromState(next);
-  state.selectedProjectId = next.settings.projects[0]?.id ?? null;
+  state.selectedProjectId = rememberedProjectId(next.settings.projects) ?? next.settings.projects[0]?.id ?? null;
   state.activeProjectId = inferActiveProjectId(next);
   syncStackDraftFromState(next);
   render();
