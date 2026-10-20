@@ -1030,7 +1030,10 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
 
         <header class="content-header">
           <div class="header-info">
-            <h2>${state.activeTab === 'overview' ? t('projects') : state.activeTab === 'settings' ? t('settings') : state.activeTab === 'logs' ? t('logs') : state.activeTab === 'terminal' ? t('terminal') : t('about')}</h2>
+            <div class="header-title-row">
+              <h2>${state.activeTab === 'overview' ? t('projects') : state.activeTab === 'settings' ? t('settings') : state.activeTab === 'logs' ? t('logs') : state.activeTab === 'terminal' ? t('terminal') : t('about')}</h2>
+              <span class="pill ${tunnelStatus.running ? 'pill-success' : 'pill-outline'}">${tunnelStatus.running ? t('running') : t('stopped')}</span>
+            </div>
             ${state.busy ? `<p class="busy-indicator">${escapeHtml(state.busy)}</p>` : ''}
           </div>
           <div class="header-actions">
