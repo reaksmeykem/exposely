@@ -1112,3 +1112,75 @@ label.checkbox-row small.hint {
 .php-version-select {
   max-width: 160px;
 }
+
+.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.terminal-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+.terminal-project-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.terminal-folder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.terminal-folder .hero-project-path {
+  margin: 0;
+}
+.terminal-command-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.terminal-command-row label {
+  flex: 1;
+}
+.terminal-output {
+  margin: 0;
+  min-height: 240px;
+  max-height: 46vh;
+  overflow: auto;
+  background: #0b0b0e;
+  color: #e4e4e7;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: 'Cascadia Code', 'Fira Code', Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.terminal-line {
+  display: block;
+}
+.terminal-stderr {
+  color: #fca5a5;
+}
+.terminal-system {
+  color: var(--accent-strong);
+}
+.terminal-empty {
+  color: var(--muted);
+}
+.terminal-input-row {
+  display: flex;
+  gap: 8px;
+}
+.terminal-input-row input {
+  flex: 1;
+}

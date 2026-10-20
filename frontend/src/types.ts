@@ -150,3 +150,23 @@ export interface UpdateInfo {
   releaseUrl: string;
   message: string;
 }
+
+export interface TerminalStatus {
+  running: boolean;
+  pid: number;
+  command: string;
+  dir: string;
+  projectId: string;
+  session: number;
+}
+
+export interface TerminalLineEvent {
+  session: number;
+  stream: string;
+  line: string;
+}
+
+export interface TerminalExitEvent {
+  session: number;
+  code: number;
+}

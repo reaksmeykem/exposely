@@ -33,6 +33,7 @@ import (
 	"github.com/reaksmeykem/exposely/internal/settings"
 	"github.com/reaksmeykem/exposely/internal/stacks"
 	"github.com/reaksmeykem/exposely/internal/sysproc"
+	"github.com/reaksmeykem/exposely/internal/terminal"
 	"github.com/reaksmeykem/exposely/internal/version"
 )
 
@@ -41,23 +42,27 @@ const embeddedLicensePublicKey = ""
 var localServiceURLPattern = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1)(?::\d+)?(?:/[^\s"'<>]*)?`)
 
 type App struct {
-	ctx         context.Context
-	store       *settings.Store
-	manager     *cloudflare.Manager
-	configPath  string
-	homeDir     string
-	appDataDir  string
-	deviceID    string
-	buildMu     sync.Mutex
-	buildCmd    *exec.Cmd
-	projectMu   sync.Mutex
-	projectCmd  *exec.Cmd
-	lastStateMu sync.Mutex
-	updateMu      sync.RWMutex
-	updateInfo    models.UpdateInfo
-	localStackMu  sync.RWMutex
-	localStack    localstack.Info
-	stacks        *stacks.Manager
+	ctx               context.Context
+	store             *settings.Store
+	manager           *cloudflare.Manager
+	configPath        string
+	homeDir           string
+	appDataDir        string
+	deviceID          string
+	buildMu           sync.Mutex
+	buildCmd          *exec.Cmd
+	projectMu         sync.Mutex
+	projectCmd        *exec.Cmd
+	terminal          *terminal.Runner
+	terminalMu        sync.Mutex
+	terminalProjectID string
+	terminalSessID    int
+	lastStateMu       sync.Mutex
+	updateMu          sync.RWMutex
+	updateInfo        models.UpdateInfo
+	localStackMu      sync.RWMutex
+	localStack        localstack.Info
+	stacks            *stacks.Manager
 }
 
 func NewApp() (*App, error) {
@@ -83,6 +88,7 @@ func NewApp() (*App, error) {
 	app.manager = cloudflare.NewManager(app.configPath, app.pushLog, app.pushStatus)
 	app.localStack = localstack.Detect()
 	app.stacks = stacks.NewManager()
+	app.terminal = &terminal.Runner{}
 	return app, nil
 }
 
@@ -456,6 +462,9 @@ func (a *App) shutdown(context.Context) {
 	_ = a.manager.StopTunnel()
 	a.stopProjectCommand()
 	a.stopBuild()
+	if a.terminal != nil {
+		_ = a.terminal.Stop()
+	}
 	if a.stacks != nil {
 		a.stacks.StopAll()
 	}
@@ -1743,6 +1752,77 @@ func (a *App) RunNpmBuild(projectID string) error {
 	return nil
 }
 
+// TerminalStart runs a command inside the project folder and streams its
+// output to the UI. Only one terminal command runs at a time.
+func (a *App) TerminalStart(projectID, command string) (models.TerminalStatus, error) {
+	_, project, err := a.loadProject(projectID)
+	if err != nil {
+		return models.TerminalStatus{}, err
+	}
+	dir := strings.TrimSpace(project.ProjectPath)
+	if dir == "" {
+		return models.TerminalStatus{}, errors.New("this project has no folder path; set one in Edit project")
+	}
+	info, statErr := os.Stat(dir)
+	if statErr != nil || !info.IsDir() {
+		return models.TerminalStatus{}, fmt.Errorf("project folder not found: %s", dir)
+	}
+
+	a.terminalMu.Lock()
+	a.terminalSessID++
+	session := a.terminalSessID
+	a.terminalProjectID = projectID
+	a.terminalMu.Unlock()
+
+	pid, err := a.terminal.Start(dir, command, func(event terminal.Event) {
+		if a.ctx != nil {
+			wruntime.EventsEmit(a.ctx, "terminal-line", models.TerminalLine{
+				Session: session,
+				Stream:  event.Stream,
+				Line:    event.Line,
+			})
+		}
+	}, func(exit terminal.Exit) {
+		if a.ctx != nil {
+			wruntime.EventsEmit(a.ctx, "terminal-exit", models.TerminalExit{
+				Session: session,
+				Code:    exit.Code,
+			})
+		}
+	})
+	if err != nil {
+		return models.TerminalStatus{}, err
+	}
+
+	command = strings.TrimSpace(command)
+	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "terminal", Level: "info", Message: "Started terminal command in " + dir + ": " + command})
+	return models.TerminalStatus{Running: true, PID: pid, Command: command, Dir: dir, ProjectID: projectID, Session: session}, nil
+}
+
+func (a *App) TerminalStop() error {
+	return a.terminal.Stop()
+}
+
+func (a *App) TerminalSendInput(input string) error {
+	return a.terminal.SendInput(input)
+}
+
+func (a *App) TerminalStatus() models.TerminalStatus {
+	status := a.terminal.Status()
+	a.terminalMu.Lock()
+	projectID := a.terminalProjectID
+	session := a.terminalSessID
+	a.terminalMu.Unlock()
+	return models.TerminalStatus{
+		Running:   status.Running,
+		PID:       status.PID,
+		Command:   status.Command,
+		Dir:       status.Dir,
+		ProjectID: projectID,
+		Session:   session,
+	}
+}
+
 func (a *App) OpenPublicURL(projectID string) error {
 	settingsValue, project, err := a.loadProject(projectID)
 	if err != nil {
@@ -2302,17 +2382,17 @@ func (a *App) GetPHPConfig() map[string]interface{} {
 		activeDir = stacks.ActivePHPDirFor(a.appDataDir, settingsValue.Stack.ManagedPHPVersion)
 	}
 	result := map[string]interface{}{
-		"installed":     managed && stacks.PHPDirHasBins(activeDir),
-		"installDir":    activeDir,
-		"useManagedPHP": managed,
+		"installed":      managed && stacks.PHPDirHasBins(activeDir),
+		"installDir":     activeDir,
+		"useManagedPHP":  managed,
 		"managedVersion": strings.TrimSpace(settingsValue.Stack.ManagedPHPVersion),
-		"memoryLimit":   settingsValue.Stack.PHPMemoryLimit,
-		"uploadMax":     settingsValue.Stack.PHPUploadMaxFilesize,
-		"postMax":       settingsValue.Stack.PHPPostMaxSize,
-		"maxExecTime":   settingsValue.Stack.PHPMaxExecutionTime,
-		"extraExts":     settingsValue.Stack.PHPExtraExtensions,
-		"version":       "",
-		"iniPath":       "",
+		"memoryLimit":    settingsValue.Stack.PHPMemoryLimit,
+		"uploadMax":      settingsValue.Stack.PHPUploadMaxFilesize,
+		"postMax":        settingsValue.Stack.PHPPostMaxSize,
+		"maxExecTime":    settingsValue.Stack.PHPMaxExecutionTime,
+		"extraExts":      settingsValue.Stack.PHPExtraExtensions,
+		"version":        "",
+		"iniPath":        "",
 	}
 	if managed && stacks.PHPDirHasBins(activeDir) {
 		result["version"] = stacks.PHPVersionOf(activeDir)

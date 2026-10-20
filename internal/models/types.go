@@ -24,20 +24,20 @@ type ProjectPreset struct {
 }
 
 type AppSettings struct {
-	DefaultDomain         string          `json:"defaultDomain"`
-	TunnelName            string          `json:"tunnelName"`
-	CloudflaredPath       string          `json:"cloudflaredPath"`
-	DefaultServiceURL     string          `json:"defaultServiceURL"`
-	InsecureSkipOriginTLS bool            `json:"insecureSkipOriginTls"`
+	DefaultDomain         string `json:"defaultDomain"`
+	TunnelName            string `json:"tunnelName"`
+	CloudflaredPath       string `json:"cloudflaredPath"`
+	DefaultServiceURL     string `json:"defaultServiceURL"`
+	InsecureSkipOriginTLS bool   `json:"insecureSkipOriginTls"`
 	// DevServerFallback controls whether Exposely may probe common
 	// dev-server ports (8000, 5173, ...) and tunnel to them when the
 	// configured origin (local stack / explicit URL) is not reachable.
 	// Nil pointer = unset = default true, preserving existing behaviour
 	// for users who never touch the setting.
-	DevServerFallback *bool  `json:"devServerFallback,omitempty"`
-	LicenseToken      string `json:"licenseToken,omitempty"`
-	Language          string `json:"language"`
-	Theme             string `json:"theme"`
+	DevServerFallback *bool           `json:"devServerFallback,omitempty"`
+	LicenseToken      string          `json:"licenseToken,omitempty"`
+	Language          string          `json:"language"`
+	Theme             string          `json:"theme"`
 	Projects          []ProjectPreset `json:"projects"`
 	// Stack holds the optional Exposely-managed local dev stack
 	// (nginx + PHP + MySQL). Every field is opt-in: empty paths mean
@@ -54,7 +54,7 @@ func (s AppSettings) DevServerFallbackEnabled() bool {
 // Exposely can run on the user's behalf. Ports default to the canonical
 // values when zero.
 type StackSettings struct {
-	NginxBinaryPath string `json:"nginxBinaryPath,omitempty"`
+	NginxBinaryPath  string `json:"nginxBinaryPath,omitempty"`
 	PHPCGIBinaryPath string `json:"phpCgiBinaryPath,omitempty"`
 	MySQLDBinaryPath string `json:"mysqldBinaryPath,omitempty"`
 	// NginxPort is the HTTP port nginx listens on (default 8090 to
@@ -220,4 +220,24 @@ type LicenseState struct {
 	DeviceID   string `json:"deviceId"`
 	Message    string `json:"message"`
 	Configured bool   `json:"configured"`
+}
+
+type TerminalStatus struct {
+	Running   bool   `json:"running"`
+	PID       int    `json:"pid"`
+	Command   string `json:"command"`
+	Dir       string `json:"dir"`
+	ProjectID string `json:"projectId"`
+	Session   int    `json:"session"`
+}
+
+type TerminalLine struct {
+	Session int    `json:"session"`
+	Stream  string `json:"stream"`
+	Line    string `json:"line"`
+}
+
+type TerminalExit struct {
+	Session int `json:"session"`
+	Code    int `json:"code"`
 }

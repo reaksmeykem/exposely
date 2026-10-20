@@ -1,4 +1,4 @@
-import type { AppState, AppSettings, ProjectPreset, TunnelStatus, LogEntry } from './types';
+import type { AppState, AppSettings, ProjectPreset, TunnelStatus, LogEntry, TerminalStatus } from './types';
 
 declare global {
   interface Window {
@@ -24,6 +24,10 @@ declare global {
           OpenSettingsFile(): Promise<void>;
           BrowseProjectFolder(currentPath: string): Promise<string>;
           TestProject(id: string): Promise<string>;
+          TerminalStart(projectId: string, command: string): Promise<TerminalStatus>;
+          TerminalStop(): Promise<void>;
+          TerminalSendInput(input: string): Promise<void>;
+          TerminalStatus(): Promise<TerminalStatus>;
         };
       };
     };

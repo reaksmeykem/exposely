@@ -3,7 +3,7 @@ import { api } from './api';
 import { t, setLang, getLang } from './i18n';
 import khFlagUrl from './kh.png';
 import { WindowCenter, WindowIsMaximised, WindowSetMinSize, WindowSetSize, WindowUnmaximise } from '../wailsjs/runtime/runtime';
-import type { AppState, LogEntry, PHPConfigInfo, ProjectPreset, ShareMode, StackServiceStatus, TunnelStatus } from './types';
+import type { AppState, LogEntry, PHPConfigInfo, ProjectPreset, ShareMode, StackServiceStatus, TerminalExitEvent, TerminalLineEvent, TerminalStatus, TunnelStatus } from './types';
 
 type NoticeTone = 'info' | 'success' | 'error';
 
@@ -19,7 +19,7 @@ interface UIState {
   activeProjectId: string | null;
   projectUrls: Record<string, string>;
   copiedProjectId: string | null;
-  activeTab: 'overview' | 'settings' | 'logs' | 'about';
+  activeTab: 'overview' | 'settings' | 'logs' | 'terminal' | 'about';
   projectMenuOpen: boolean;
   editorOpen: boolean;
   editorMode: 'create' | 'edit';
@@ -39,6 +39,13 @@ interface UIState {
     phpPort: number;
     mysqlPort: number;
   };
+  terminalProjectId: string | null;
+  terminalCommand: string;
+  terminalRunning: boolean;
+  terminalStarting: boolean;
+  terminalSession: number;
+  terminalExitedSession: number;
+  terminalLines: { stream: string; line: string }[];
 }
 
 const blankProject = (): ProjectPreset => ({
@@ -83,6 +90,13 @@ const state: UIState = {
   phpConfig: null,
   phpVersions: null,
   stackDraft: blankStackDraft(),
+  terminalProjectId: null,
+  terminalCommand: 'npm run dev',
+  terminalRunning: false,
+  terminalStarting: false,
+  terminalSession: 0,
+  terminalExitedSession: 0,
+  terminalLines: [],
 };
 
 const rootElement = document.querySelector<HTMLDivElement>('#app');
@@ -509,6 +523,115 @@ function logRows(logs: LogEntry[]): string {
     .join('');
 }
 
+function terminalProject(): ProjectPreset | null {
+  const projects = state.appState?.settings.projects ?? [];
+  const id = state.terminalProjectId || state.selectedProjectId;
+  return projects.find((project) => project.id === id) ?? projects[0] ?? null;
+}
+
+function terminalOutputHtml(): string {
+  if (state.terminalLines.length === 0) {
+    return `<span class="terminal-line terminal-empty">${escapeHtml(t('terminalEmpty'))}</span>`;
+  }
+  return state.terminalLines
+    .map((entry) => `<span class="terminal-line terminal-${escapeHtml(entry.stream || 'stdout')}">${escapeHtml(entry.line) || '&nbsp;'}</span>`)
+    .join('\n');
+}
+
+function renderTerminalPanel(): string {
+  const projects = state.appState?.settings.projects ?? [];
+  const project = terminalProject();
+  const folderPath = project && !looksLikeURL(project.projectPath.trim()) ? project.projectPath.trim() : '';
+  const currentId = project?.id ?? '';
+  const options = projects.length
+    ? projects
+        .map((entry) => `<option value="${escapeHtml(entry.id)}" ${entry.id === currentId ? 'selected' : ''}>${escapeHtml(entry.displayName)}</option>`)
+        .join('')
+    : `<option value="">${escapeHtml(t('noProject'))}</option>`;
+
+  return `
+    <section class="panel terminal-panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">${t('terminal')}</p>
+          <h2>${escapeHtml(t('terminalSubtitle'))}</h2>
+        </div>
+        <span class="pill ${state.terminalRunning ? 'pill-success' : 'pill-outline'}">${state.terminalRunning ? t('running') : t('stopped')}</span>
+      </div>
+      <div class="terminal-toolbar">
+        <label class="terminal-project-label">${t('terminalProject')}
+          <select id="terminal-project" name="terminalProject" ${state.terminalRunning ? 'disabled' : ''}>${options}</select>
+        </label>
+        <div class="terminal-folder">
+          <span class="summary-label">${t('projectFolder')}</span>
+          <p class="hero-project-path" title="${escapeHtml(folderPath)}">${escapeHtml(folderPath || '—')}</p>
+          <button type="button" class="secondary" data-action="open-project-folder" data-id="${escapeHtml(currentId)}" ${folderPath ? '' : 'disabled'}>${t('openFolder')}</button>
+        </div>
+      </div>
+      <form id="terminal-command-form" class="terminal-command-row">
+        <label class="wide">${t('terminalCommand')}
+          <input name="terminalCommand" value="${escapeHtml(state.terminalCommand)}" placeholder="npm run dev" spellcheck="false" autocomplete="off" />
+        </label>
+        <button type="submit" ${state.terminalRunning || !project ? 'disabled' : ''}>${t('terminalRun')}</button>
+        <button type="button" class="danger-button" data-action="terminal-stop" ${state.terminalRunning ? '' : 'disabled'}>${t('stop')}</button>
+        <button type="button" class="secondary" data-action="terminal-clear">${t('terminalClear')}</button>
+      </form>
+      <pre id="terminal-output" class="terminal-output">${terminalOutputHtml()}</pre>
+      <form id="terminal-input-form" class="terminal-input-row">
+        <input name="terminalInput" placeholder="${escapeHtml(t('terminalInputPlaceholder'))}" autocomplete="off" ${state.terminalRunning ? '' : 'disabled'} />
+        <button type="submit" class="secondary" ${state.terminalRunning ? '' : 'disabled'}>${t('terminalSend')}</button>
+      </form>
+      ${project && !folderPath ? `<p class="hint">${escapeHtml(t('terminalNoFolder'))}</p>` : ''}
+    </section>
+  `;
+}
+
+function appendTerminalLine(stream: string, line: string) {
+  state.terminalLines.push({ stream, line });
+  if (state.terminalLines.length > 2000) {
+    state.terminalLines.splice(0, state.terminalLines.length - 2000);
+  }
+  const output = root.querySelector<HTMLElement>('#terminal-output');
+  if (!output || state.activeTab !== 'terminal') return;
+
+  const empty = output.querySelector('.terminal-empty');
+  if (empty) empty.remove();
+
+  const row = document.createElement('span');
+  row.className = `terminal-line terminal-${stream || 'stdout'}`;
+  row.textContent = line || ' ';
+  output.appendChild(row);
+  output.appendChild(document.createTextNode('\n'));
+  output.scrollTop = output.scrollHeight;
+}
+
+async function runTerminalCommand() {
+  const projects = state.appState?.settings.projects ?? [];
+  const projectId = state.terminalProjectId || state.selectedProjectId;
+  const project = projects.find((entry) => entry.id === projectId);
+  if (!project) {
+    setNotice('error', t('selectProjectFirst'));
+    return;
+  }
+  const input = root.querySelector<HTMLInputElement>('#terminal-command-form input[name=terminalCommand]');
+  const command = (input?.value ?? state.terminalCommand).trim();
+  if (!command) return;
+
+  state.terminalCommand = command;
+  state.terminalProjectId = project.id;
+  state.terminalLines = [];
+  state.terminalStarting = true;
+  const status = await withAction(t('terminalRun'), () => api.terminalStart(project.id, command));
+  state.terminalStarting = false;
+  if (!status) {
+    render();
+    return;
+  }
+  state.terminalRunning = !!status.running && status.session !== state.terminalExitedSession;
+  state.terminalSession = status.session;
+  render();
+}
+
 function projectRows(appState: AppState): string {
   const query = state.projectSearch.trim().toLowerCase();
   const projects = appState.settings.projects.filter((project) => {
@@ -863,6 +986,13 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
               </svg>
               <span>${t('logs')}</span>
             </button>
+            <button type="button" class="top-nav-item ${state.activeTab === 'terminal' ? 'active' : ''}" data-action="tab-terminal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="4 17 10 11 4 5"></polyline>
+                <line x1="12" y1="19" x2="20" y2="19"></line>
+              </svg>
+              <span>${t('terminal')}</span>
+            </button>
           </nav>
           <div class="navbar-actions">
             <button type="button" class="stack-toggle ${stackRunningCount > 0 ? 'stack-toggle-on' : ''}" data-action="stack-toggle-all" title="${stackRunningCount > 0 ? t('stackStopAll') : t('stackStartAll')}" ${!stackConfigured ? 'disabled' : ''}>
@@ -900,7 +1030,7 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
 
         <header class="content-header">
           <div class="header-info">
-            <h2>${state.activeTab === 'overview' ? t('projects') : state.activeTab === 'settings' ? t('settings') : state.activeTab === 'logs' ? t('logs') : t('about')}</h2>
+            <h2>${state.activeTab === 'overview' ? t('projects') : state.activeTab === 'settings' ? t('settings') : state.activeTab === 'logs' ? t('logs') : state.activeTab === 'terminal' ? t('terminal') : t('about')}</h2>
             ${state.busy ? `<p class="busy-indicator">${escapeHtml(state.busy)}</p>` : ''}
           </div>
           <div class="header-actions">
@@ -1057,6 +1187,12 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
                                 state.projectMenuOpen
                                   ? `
                                     <div class="dropdown-menu">
+                                      <button type="button" class="dropdown-item" data-action="open-project-folder" ${projectFolderPath ? '' : 'disabled'}>
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                                        </svg>
+                                        <span>${t('openFolder')}</span>
+                                      </button>
                                       <button type="button" class="dropdown-item" data-action="edit-project">
                                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                                           <path d="M11.333 2.667a.943.943 0 0 1 1.333 1.333l-6.4 6.4L3.333 11.333l.933-2.933 6.4-5.733Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1276,6 +1412,8 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
                     <div class="log-stream">${logRows(appState.status.lastLogs)}</div>
                   </section>
                 `
+               : state.activeTab === 'terminal'
+                ? renderTerminalPanel()
                : `
                   <article class="panel compact-panel">
                     <div class="panel-header">
@@ -1579,9 +1717,46 @@ function bindForms() {
     const savedProjectId = payload.id || (next.settings.projects[next.settings.projects.length - 1]?.id ?? null);
     state.selectedProjectId = savedProjectId;
     rememberSelectedProject(savedProjectId);
+    if (!state.terminalRunning) {
+      state.terminalProjectId = savedProjectId;
+    }
     state.editorOpen = false;
     setNotice('success', t('projectSaved'));
   });
+
+  const terminalForm = root.querySelector<HTMLFormElement>('#terminal-command-form');
+  terminalForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await runTerminalCommand();
+  });
+
+  const terminalInputForm = root.querySelector<HTMLFormElement>('#terminal-input-form');
+  terminalInputForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = terminalInputForm.querySelector<HTMLInputElement>('input[name=terminalInput]');
+    const value = input?.value ?? '';
+    if (!value.trim()) return;
+    try {
+      await api.terminalSendInput(value);
+      if (input) input.value = '';
+    } catch (error) {
+      setNotice('error', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  const terminalProjectSelect = root.querySelector<HTMLSelectElement>('#terminal-project');
+  terminalProjectSelect?.addEventListener('change', () => {
+    const nextId = terminalProjectSelect.value || null;
+    state.terminalProjectId = nextId;
+    state.selectedProjectId = nextId;
+    rememberSelectedProject(nextId);
+    render();
+  });
+
+  if (state.activeTab === 'terminal') {
+    const output = root.querySelector<HTMLElement>('#terminal-output');
+    if (output) output.scrollTop = output.scrollHeight;
+  }
 }
 
 async function handleAction(action: string, id: string | null, sourceEl: HTMLElement | null = null) {
@@ -1621,6 +1796,14 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       state.projectMenuOpen = false;
       render();
       return;
+    case 'tab-terminal':
+      state.activeTab = 'terminal';
+      state.projectMenuOpen = false;
+      if (!state.terminalProjectId) {
+        state.terminalProjectId = state.selectedProjectId;
+      }
+      render();
+      return;
     case 'tab-about':
       state.activeTab = 'about';
       state.projectMenuOpen = false;
@@ -1632,6 +1815,9 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       return;
     case 'select-project':
       state.selectedProjectId = id ?? null;
+      if (!state.terminalRunning) {
+        state.terminalProjectId = state.selectedProjectId;
+      }
       rememberSelectedProject(state.selectedProjectId);
       state.projectMenuOpen = false;
       render();
@@ -2063,6 +2249,17 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
     case 'open-project-folder':
       await withAction(t('openFolder'), () => api.openProjectFolder(id!));
       return;
+    case 'terminal-stop': {
+      await withAction(t('stop'), () => api.terminalStop());
+      state.terminalRunning = false;
+      appendTerminalLine('system', t('terminalStopped'));
+      render();
+      return;
+    }
+    case 'terminal-clear':
+      state.terminalLines = [];
+      render();
+      return;
     case 'npm-build': {
       const result = await withAction('npm build', () => api.runNpmBuild(id!));
       if (result !== undefined) setNotice('success', t('npmBuildStarted'));
@@ -2140,7 +2337,19 @@ async function bootstrap() {
   state.selectedProjectId = rememberedProjectId(next.settings.projects) ?? next.settings.projects[0]?.id ?? null;
   state.activeProjectId = inferActiveProjectId(next);
   syncStackDraftFromState(next);
+  state.terminalProjectId = state.selectedProjectId;
   render();
+
+  void api.terminalStatus().then((status) => {
+    if (!status?.running) return;
+    state.terminalRunning = true;
+    state.terminalSession = status.session;
+    state.terminalProjectId = status.projectId || state.terminalProjectId;
+    state.terminalCommand = status.command || state.terminalCommand;
+    render();
+  }).catch(() => {
+    // Terminal status is optional; ignore when bindings are unavailable.
+  });
 
   void api.stackStatus().then((statuses) => {
     state.stackStatuses = statuses ?? [];
@@ -2174,6 +2383,24 @@ async function bootstrap() {
     render();
   }).catch(() => {
     // Ignore update check failures to keep startup non-blocking.
+  });
+
+  window.runtime?.EventsOn('terminal-line', (payload) => {
+    const event = payload as unknown as TerminalLineEvent;
+    if (!state.terminalRunning && !state.terminalStarting) return;
+    if (!state.terminalStarting && state.terminalSession && event.session !== state.terminalSession) return;
+    appendTerminalLine(event.stream, event.line);
+  });
+
+  window.runtime?.EventsOn('terminal-exit', async (payload) => {
+    const event = payload as unknown as TerminalExitEvent;
+    if (!state.terminalRunning && !state.terminalStarting) return;
+    if (!state.terminalStarting && state.terminalSession && event.session !== state.terminalSession) return;
+    state.terminalRunning = false;
+    state.terminalStarting = false;
+    state.terminalExitedSession = event.session;
+    appendTerminalLine('system', `${t('terminalExited')} ${event.code}`);
+    render();
   });
 
   window.runtime?.EventsOn('log', (payload) => {

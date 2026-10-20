@@ -1,4 +1,4 @@
-import type { AppSettings, AppState, PHPConfigInfo, ProjectPreset, StackServiceStatus, TunnelUsage } from './types';
+import type { AppSettings, AppState, PHPConfigInfo, ProjectPreset, StackServiceStatus, TerminalStatus, TunnelUsage } from './types';
 
 type AppBindings = NonNullable<NonNullable<NonNullable<typeof window.go>['main']>['App']>;
 
@@ -43,6 +43,14 @@ export const api = {
   installLatestUpdate: (): Promise<string> => (appBinding() as AppBindings & { InstallLatestUpdate(): Promise<string> }).InstallLatestUpdate(),
   browseProjectFolder: (currentPath: string): Promise<string> => appBinding().BrowseProjectFolder(currentPath),
   testProject: (id: string): Promise<string> => appBinding().TestProject(id),
+  terminalStart: (projectId: string, command: string): Promise<TerminalStatus> =>
+    (appBinding() as AppBindings & { TerminalStart(projectId: string, command: string): Promise<TerminalStatus> }).TerminalStart(projectId, command),
+  terminalStop: (): Promise<void> =>
+    (appBinding() as AppBindings & { TerminalStop(): Promise<void> }).TerminalStop(),
+  terminalSendInput: (input: string): Promise<void> =>
+    (appBinding() as AppBindings & { TerminalSendInput(input: string): Promise<void> }).TerminalSendInput(input),
+  terminalStatus: (): Promise<TerminalStatus> =>
+    (appBinding() as AppBindings & { TerminalStatus(): Promise<TerminalStatus> }).TerminalStatus(),
   getTunnelUsage: (): Promise<TunnelUsage> => (appBinding() as AppBindings & { GetTunnelUsage(): Promise<TunnelUsage> }).GetTunnelUsage(),
   startStackService: (service: string): Promise<AppState> => (appBinding() as AppBindings & { StartStackService(service: string): Promise<AppState> }).StartStackService(service),
   stopStackService: (service: string): Promise<AppState> => (appBinding() as AppBindings & { StopStackService(service: string): Promise<AppState> }).StopStackService(service),
