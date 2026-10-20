@@ -112,13 +112,23 @@ func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
 			}
 		}
 		// Serve plain http://*.test (no port suffix) too by also
-		// listening on port 80 — but only when port 80 is actually
-		// free (EnvKit / Herd / IIS may own it). nginx refuses to
-		// start when any listen address is taken, so an occupied 80
-		// is skipped and retried on the next conf regeneration.
+		// listening on port 80. nginx refuses to start when any listen
+		// address is taken, so:
+		//   - port 80 free          → include it;
+		//   - held by our nginx     → include it (dropping the line makes
+		//     `nginx -s reload` CLOSE the socket and break every site
+		//     already served over plain :80);
+		//   - held by another app   → skip and retry on the next
+		//     conf regeneration.
 		extraListens := []int{}
-		if stack.EffectiveNginxPort() != 80 && stacks.PortAvailable(80) {
-			extraListens = append(extraListens, 80)
+		if stack.EffectiveNginxPort() != 80 {
+			port80Free := stacks.PortAvailable(80)
+			if ourPID := a.stacks.Status(stacks.ServiceNginx).PID; !port80Free && ourPID > 0 && stacks.ListenPortOwnedByPID(80, ourPID) {
+				port80Free = true
+			}
+			if port80Free {
+				extraListens = append(extraListens, 80)
+			}
 		}
 		if !hasLocalhost {
 			sites = append(sites, stacks.SiteConfig{
@@ -232,7 +242,7 @@ func (a *App) StartStackService(service string) (models.AppState, error) {
 	case stacks.ServiceNginx, stacks.ServicePHP, stacks.ServiceMySQL:
 		if strings.TrimSpace(a.stacksConfiguredBinary(settingsValue, normalized)) == "" {
 			var err error
-			settingsValue, err = a.ensureServiceBinary(settingsValue, normalized)
+			settingsValue, err = a.ensureServiceBinary(normalized)
 			if err != nil {
 				return models.AppState{}, err
 			}
@@ -304,9 +314,10 @@ func looksLikeVersionStr(s string) bool {
 // ensureServiceBinary provisions a binary for a service that has no
 // path configured: try local detection first (managed copies, EnvKit,
 // Laragon, XAMPP, PATH), then fall back to downloading Exposely's own
-// install. The returned settings value is reloaded after either path
-// persists the new binary location.
-func (a *App) ensureServiceBinary(settingsValue models.AppSettings, service stacks.Service) (models.AppSettings, error) {
+// install. The decision and its persistence run as one locked Update so
+// a concurrent settings change is never clobbered; the returned
+// settings value reflects the persisted result.
+func (a *App) ensureServiceBinary(service stacks.Service) (models.AppSettings, error) {
 	a.pushLog(models.LogEntry{
 		Timestamp: nowStamp(),
 		Source:    "stack",
@@ -314,61 +325,59 @@ func (a *App) ensureServiceBinary(settingsValue models.AppSettings, service stac
 		Message:   fmt.Sprintf("%s has no binary configured — detecting, then installing if needed", service),
 	})
 
-	// Detection first: cheap, no download, respects an existing local
-	// stack the user has not pointed at yet.
-	found := stacks.DetectBinaries(a.appDataDir)
-	if p := found[service]; p != "" {
+	var outcome string
+	settingsValue, err := a.store.Update(func(latest *models.AppSettings) error {
+		// Detection first: cheap, no download, respects an existing local
+		// stack the user has not pointed at yet.
+		found := stacks.DetectBinaries(a.appDataDir)
+		if p := found[service]; p != "" {
+			switch service {
+			case stacks.ServiceNginx:
+				latest.Stack.NginxBinaryPath = p
+			case stacks.ServicePHP:
+				latest.Stack.PHPCGIBinaryPath = p
+				if managed, version := managedPHPVersionFromPath(a.appDataDir, p); managed {
+					latest.Stack.UseManagedPHP = true
+					latest.Stack.ManagedPHPVersion = version
+				}
+			case stacks.ServiceMySQL:
+				latest.Stack.MySQLDBinaryPath = p
+			}
+			*latest = a.normalizeSettings(*latest)
+			outcome = fmt.Sprintf("Detected %s at %s", service, p)
+			return nil
+		}
+
+		// Nothing on the machine: install Exposely's own copy.
 		switch service {
 		case stacks.ServiceNginx:
-			settingsValue.Stack.NginxBinaryPath = p
+			_, exePath, err := stacks.InstallNginx(a.appDataDir)
+			if err != nil {
+				return err
+			}
+			latest.Stack.NginxBinaryPath = exePath
 		case stacks.ServicePHP:
-			settingsValue.Stack.PHPCGIBinaryPath = p
-			if managed, version := managedPHPVersionFromPath(a.appDataDir, p); managed {
-				settingsValue.Stack.UseManagedPHP = true
-				settingsValue.Stack.ManagedPHPVersion = version
+			dir, _, err := stacks.InstallPHP(a.appDataDir)
+			if err != nil {
+				return err
+			}
+			latest.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
+			latest.Stack.UseManagedPHP = true
+			if version := stacks.PHPVersionOf(dir); looksLikeVersionStr(version) {
+				latest.Stack.ManagedPHPVersion = version
 			}
 		case stacks.ServiceMySQL:
-			settingsValue.Stack.MySQLDBinaryPath = p
+			_, exePath, err := stacks.InstallMariaDB(a.appDataDir)
+			if err != nil {
+				return err
+			}
+			latest.Stack.MySQLDBinaryPath = exePath
 		}
-		if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
-			return models.AppSettings{}, err
-		}
-		a.applyStackConfigs(settingsValue)
-		a.pushLog(models.LogEntry{
-			Timestamp: nowStamp(),
-			Source:    "stack",
-			Level:     "info",
-			Message:   fmt.Sprintf("Detected %s at %s", service, p),
-		})
-		return settingsValue, nil
-	}
-
-	// Nothing on the machine: install Exposely's own copy.
-	switch service {
-	case stacks.ServiceNginx:
-		_, exePath, err := stacks.InstallNginx(a.appDataDir)
-		if err != nil {
-			return models.AppSettings{}, err
-		}
-		settingsValue.Stack.NginxBinaryPath = exePath
-	case stacks.ServicePHP:
-		dir, _, err := stacks.InstallPHP(a.appDataDir)
-		if err != nil {
-			return models.AppSettings{}, err
-		}
-		settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
-		settingsValue.Stack.UseManagedPHP = true
-		if version := stacks.PHPVersionOf(dir); looksLikeVersionStr(version) {
-			settingsValue.Stack.ManagedPHPVersion = version
-		}
-	case stacks.ServiceMySQL:
-		_, exePath, err := stacks.InstallMariaDB(a.appDataDir)
-		if err != nil {
-			return models.AppSettings{}, err
-		}
-		settingsValue.Stack.MySQLDBinaryPath = exePath
-	}
-	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		*latest = a.normalizeSettings(*latest)
+		outcome = fmt.Sprintf("Installed Exposely-managed %s", service)
+		return nil
+	})
+	if err != nil {
 		return models.AppSettings{}, err
 	}
 	a.applyStackConfigs(settingsValue)
@@ -376,7 +385,7 @@ func (a *App) ensureServiceBinary(settingsValue models.AppSettings, service stac
 		Timestamp: nowStamp(),
 		Source:    "stack",
 		Level:     "success",
-		Message:   fmt.Sprintf("Installed Exposely-managed %s", service),
+		Message:   outcome,
 	})
 	return settingsValue, nil
 }
@@ -458,21 +467,23 @@ func (a *App) Bootstrap() (models.AppState, error) {
 
 func (a *App) RefreshState() (models.AppState, error) {
 	cfg, cfgErr := cloudflare.ReadConfig(a.configPath)
-	settingsValue, err := a.store.Load()
+	// One locked Update instead of Load→Save pairs: RefreshState runs
+	// after every action, and a stale save-back here would silently
+	// resurrect older settings over a concurrent project save or share.
+	settingsValue, err := a.store.Update(func(latest *models.AppSettings) error {
+		normalized := a.normalizeSettings(*latest)
+		if detectedPath, detectErr := a.detectCloudflaredPath(normalized.CloudflaredPath); detectErr == nil && detectedPath != normalized.CloudflaredPath {
+			normalized.CloudflaredPath = detectedPath
+		}
+		*latest = normalized
+		return nil
+	})
 	if err != nil {
 		return models.AppState{}, err
-	}
-	settingsValue = a.normalizeSettings(settingsValue)
-	if saveErr := a.store.Save(settingsValue); saveErr != nil {
-		return models.AppState{}, saveErr
 	}
 	a.applyStackConfigs(settingsValue)
 
 	detectedPath, detectErr := a.detectCloudflaredPath(settingsValue.CloudflaredPath)
-	if detectErr == nil && detectedPath != settingsValue.CloudflaredPath {
-		settingsValue.CloudflaredPath = detectedPath
-		_ = a.store.Save(settingsValue)
-	}
 
 	status := a.manager.Status()
 	licenseState := a.resolveLicenseState(settingsValue.LicenseToken)
@@ -646,11 +657,6 @@ func (a *App) SaveSettings(input models.AppSettings) (models.AppState, error) {
 }
 
 func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return models.AppState{}, err
-	}
-
 	if strings.TrimSpace(input.DisplayName) == "" {
 		return models.AppState{}, errors.New("display name is required")
 	}
@@ -673,40 +679,44 @@ func (a *App) SaveProject(input models.ProjectPreset) (models.AppState, error) {
 	input.StartCommand = strings.TrimSpace(input.StartCommand)
 	input.Subdomain = strings.TrimSpace(strings.ToLower(input.Subdomain))
 	input.ShareMode = normalizeShareMode(input.ShareMode)
-	input.PublicURL = a.projectPublicURL(input, settingsValue.DefaultDomain)
 
-	replaced := false
-	for i := range settingsValue.Projects {
-		if settingsValue.Projects[i].ID == input.ID {
-			settingsValue.Projects[i] = input
-			replaced = true
-			break
+	// Update keeps the Upsert atomic against other mutating actions
+	// (tunnel shares, installs); a stale Load→Save pair could drop the
+	// other side's change.
+	_, err := a.store.Update(func(latest *models.AppSettings) error {
+		input.PublicURL = a.projectPublicURL(input, latest.DefaultDomain)
+		replaced := false
+		for i := range latest.Projects {
+			if latest.Projects[i].ID == input.ID {
+				latest.Projects[i] = input
+				replaced = true
+				break
+			}
 		}
-	}
-	if !replaced {
-		settingsValue.Projects = append(settingsValue.Projects, input)
-	}
-
-	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		if !replaced {
+			latest.Projects = append(latest.Projects, input)
+		}
+		*latest = a.normalizeSettings(*latest)
+		return nil
+	})
+	if err != nil {
 		return models.AppState{}, err
 	}
 	return a.RefreshState()
 }
 
 func (a *App) DeleteProject(id string) (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return models.AppState{}, err
-	}
-
-	filtered := settingsValue.Projects[:0]
-	for _, project := range settingsValue.Projects {
-		if project.ID != id {
-			filtered = append(filtered, project)
+	if _, err := a.store.Update(func(latest *models.AppSettings) error {
+		filtered := latest.Projects[:0]
+		for _, project := range latest.Projects {
+			if project.ID != id {
+				filtered = append(filtered, project)
+			}
 		}
-	}
-	settingsValue.Projects = filtered
-	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+		latest.Projects = filtered
+		*latest = a.normalizeSettings(*latest)
+		return nil
+	}); err != nil {
 		return models.AppState{}, err
 	}
 	return a.RefreshState()
@@ -1555,7 +1565,16 @@ func (a *App) StartQuickTunnel(projectID string) (models.AppState, error) {
 }
 
 func (a *App) EnsureCloudflared() (models.AppState, error) {
-	settingsValue, err := a.store.Load()
+	settingsValue, err := a.store.Update(func(latest *models.AppSettings) error {
+		path, err := a.detectCloudflaredPath(latest.CloudflaredPath)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(latest.CloudflaredPath) != path {
+			latest.CloudflaredPath = path
+		}
+		return nil
+	})
 	if err != nil {
 		return models.AppState{}, err
 	}
@@ -1563,30 +1582,24 @@ func (a *App) EnsureCloudflared() (models.AppState, error) {
 	if err != nil {
 		return models.AppState{}, err
 	}
-	if strings.TrimSpace(settingsValue.CloudflaredPath) != path {
-		settingsValue.CloudflaredPath = path
-		if err := a.store.Save(settingsValue); err != nil {
-			return models.AppState{}, err
-		}
-	}
 	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "success", Message: "cloudflared is ready at " + path})
 	return a.RefreshState()
 }
 
 func (a *App) InstallCloudflared() (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return models.AppState{}, err
-	}
-
+	// Download first, outside the store lock — then persist the path
+	// atomically against a fresh load so a concurrent project save is
+	// not clobbered.
 	installPath := a.managedCloudflaredPath()
 	a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "setup", Level: "info", Message: "Downloading cloudflared to " + installPath})
 	if err := a.downloadCloudflaredBinary(installPath); err != nil {
 		return models.AppState{}, err
 	}
 
-	settingsValue.CloudflaredPath = installPath
-	if err := a.store.Save(settingsValue); err != nil {
+	if _, err := a.store.Update(func(latest *models.AppSettings) error {
+		latest.CloudflaredPath = installPath
+		return nil
+	}); err != nil {
 		return models.AppState{}, err
 	}
 
@@ -1754,6 +1767,19 @@ func (a *App) OpenPublicURL(projectID string) error {
 	return openExternal(target)
 }
 
+// OpenProjectFolder opens the project's local folder in the system file manager.
+func (a *App) OpenProjectFolder(projectID string) error {
+	_, project, err := a.loadProject(projectID)
+	if err != nil {
+		return err
+	}
+	projectDir, err := a.resolveProjectDirectory(project.ProjectPath)
+	if err != nil {
+		return err
+	}
+	return openExternal(projectDir)
+}
+
 func (a *App) OpenConfigFile() error {
 	if err := a.requireAdmin(); err != nil {
 		return err
@@ -1772,26 +1798,22 @@ func (a *App) OpenSettingsFile() error {
 }
 
 func (a *App) ActivateLicense(token string) (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return models.AppState{}, err
-	}
-	settingsValue = a.normalizeSettings(settingsValue)
-	settingsValue.LicenseToken = strings.TrimSpace(token)
-	if err := a.store.Save(settingsValue); err != nil {
+	if _, err := a.store.Update(func(latest *models.AppSettings) error {
+		*latest = a.normalizeSettings(*latest)
+		latest.LicenseToken = strings.TrimSpace(token)
+		return nil
+	}); err != nil {
 		return models.AppState{}, err
 	}
 	return a.RefreshState()
 }
 
 func (a *App) ClearLicense() (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return models.AppState{}, err
-	}
-	settingsValue = a.normalizeSettings(settingsValue)
-	settingsValue.LicenseToken = ""
-	if err := a.store.Save(settingsValue); err != nil {
+	if _, err := a.store.Update(func(latest *models.AppSettings) error {
+		*latest = a.normalizeSettings(*latest)
+		latest.LicenseToken = ""
+		return nil
+	}); err != nil {
 		return models.AppState{}, err
 	}
 	return a.RefreshState()
@@ -1890,8 +1912,14 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 	// Managed stack first: when Exposely's own nginx is configured it
 	// hosts the project vhost, so named tunnels must not fall back to
 	// legacy origin resolution (EnvKit / default service URL on 80).
+	// A vhost setup failure aborts the share — publishing through the
+	// legacy fallback would expose a different local app publicly.
 	var originServiceURL string
-	if managedOrigin, managed := a.ensureManagedVHost(project, settingsValue); managed {
+	managedOrigin, managed, vhostErr := a.ensureManagedVHost(project, settingsValue)
+	if vhostErr != nil {
+		return models.AppState{}, vhostErr
+	}
+	if managed {
 		originServiceURL = managedOrigin
 	} else {
 		var resolveErr error
@@ -1914,8 +1942,14 @@ func (a *App) shareProjectThroughNamedTunnel(settingsValue models.AppSettings, p
 		return models.AppState{}, err
 	}
 
-	settingsValue = a.updateProjectShare(settingsValue, project.ID, project.Subdomain, fullURL)
-	if err := a.store.Save(settingsValue); err != nil {
+	// Merge only the fields this share owns into a freshly loaded copy:
+	// this flow holds its settings snapshot across network calls (tunnel
+	// creation, DNS routing), and saving that whole snapshot would
+	// resurrect pre-call settings over anything the user saved meanwhile.
+	if _, err := a.store.Update(func(latest *models.AppSettings) error {
+		*latest = a.updateProjectShare(*latest, project.ID, project.Subdomain, fullURL)
+		return nil
+	}); err != nil {
 		return models.AppState{}, err
 	}
 
@@ -1950,15 +1984,20 @@ func (a *App) startQuickTunnel(project models.ProjectPreset) (models.AppState, e
 	}
 	a.stopProjectCommand()
 	stack := a.localStackInfo()
-	var originServiceURL string
 	// When the Exposely-managed stack (nginx + php-cgi) is configured,
 	// register the project's vhost with it and route the tunnel through
 	// our own nginx. This makes Exposely self-sufficient: no EnvKit /
-	// Herd / Laragon needed to serve *.test sites. Registration is
-	// best-effort — if the stack is not configured we fall through to
-	// the pre-existing origin resolution (detected stacks, dev-server
-	// fallback, etc.).
-	if managedOrigin, managed := a.ensureManagedVHost(project, settingsValue); managed {
+	// Herd / Laragon needed to serve *.test sites. When the feature does
+	// not apply (nginx unconfigured, no local host, or the project
+	// intentionally served through its origin URL) we fall through to
+	// the pre-existing origin resolution; a vhost setup failure aborts
+	// the share instead of silently publishing some other local app.
+	var originServiceURL string
+	managedOrigin, managed, vhostErr := a.ensureManagedVHost(project, settingsValue)
+	if vhostErr != nil {
+		return models.AppState{}, vhostErr
+	}
+	if managed {
 		originServiceURL = managedOrigin
 		stack = localstack.Info{Detected: false}
 	} else {
@@ -2018,25 +2057,27 @@ func (a *App) ListPHPVersions() map[string]interface{} {
 // "8.3.33") alongside any existing ones, and makes it the active one.
 // A running PHP service is restarted onto the new version.
 func (a *App) InstallPHPVersion(version string) (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return models.AppState{}, err
-	}
 	a.pushLog(models.LogEntry{
 		Timestamp: nowStamp(),
 		Source:    "stack",
 		Level:     "info",
 		Message:   fmt.Sprintf("Installing PHP %s to %s ...", version, stacks.PHPVersionDir(a.appDataDir, version)),
 	})
+	// Download outside the store lock, then persist the switch atomically.
 	dir, iniPath, err := stacks.InstallPHPVersion(a.appDataDir, version)
 	if err != nil {
 		return models.AppState{}, err
 	}
 
-	settingsValue.Stack.UseManagedPHP = true
-	settingsValue.Stack.ManagedPHPVersion = version
-	settingsValue.Stack.PHPCGIBinaryPath = filepath.Join(dir, "php-cgi.exe")
-	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+	phpCGIPath := filepath.Join(dir, "php-cgi.exe")
+	settingsValue, err := a.store.Update(func(latest *models.AppSettings) error {
+		latest.Stack.UseManagedPHP = true
+		latest.Stack.ManagedPHPVersion = version
+		latest.Stack.PHPCGIBinaryPath = phpCGIPath
+		*latest = a.normalizeSettings(*latest)
+		return nil
+	})
+	if err != nil {
 		return models.AppState{}, err
 	}
 	a.applyStackConfigs(settingsValue)
@@ -2065,40 +2106,48 @@ func (a *App) InstallPHPVersion(version string) (models.AppState, error) {
 // fills in the stack settings for every service whose path is still
 // empty. Paths the user set (or blanked) on purpose are left alone.
 func (a *App) DetectStackBinaries() (models.AppState, error) {
-	settingsValue, err := a.store.Load()
+	filledMsg := ""
+	settingsValue, err := a.store.Update(func(latest *models.AppSettings) error {
+		found := stacks.DetectBinaries(a.appDataDir)
+		filled := []string{}
+
+		if strings.TrimSpace(latest.Stack.NginxBinaryPath) == "" {
+			if p := found[stacks.ServiceNginx]; p != "" {
+				latest.Stack.NginxBinaryPath = p
+				filled = append(filled, "nginx: "+p)
+			}
+		}
+		if strings.TrimSpace(latest.Stack.PHPCGIBinaryPath) == "" {
+			if p := found[stacks.ServicePHP]; p != "" {
+				latest.Stack.PHPCGIBinaryPath = p
+				// PHP config editing only applies to the managed install;
+				// mark it when the detected binary is Exposely's own.
+				if managed, version := managedPHPVersionFromPath(a.appDataDir, p); managed {
+					latest.Stack.UseManagedPHP = true
+					latest.Stack.ManagedPHPVersion = version
+				}
+				filled = append(filled, "php: "+p)
+			}
+		}
+		if strings.TrimSpace(latest.Stack.MySQLDBinaryPath) == "" {
+			if p := found[stacks.ServiceMySQL]; p != "" {
+				latest.Stack.MySQLDBinaryPath = p
+				filled = append(filled, "mysql: "+p)
+			}
+		}
+
+		if len(filled) == 0 {
+			return nil
+		}
+		filledMsg = strings.Join(filled, "; ")
+		*latest = a.normalizeSettings(*latest)
+		return nil
+	})
 	if err != nil {
 		return models.AppState{}, err
 	}
 
-	found := stacks.DetectBinaries(a.appDataDir)
-	filled := []string{}
-
-	if strings.TrimSpace(settingsValue.Stack.NginxBinaryPath) == "" {
-		if p := found[stacks.ServiceNginx]; p != "" {
-			settingsValue.Stack.NginxBinaryPath = p
-			filled = append(filled, "nginx: "+p)
-		}
-	}
-	if strings.TrimSpace(settingsValue.Stack.PHPCGIBinaryPath) == "" {
-		if p := found[stacks.ServicePHP]; p != "" {
-			settingsValue.Stack.PHPCGIBinaryPath = p
-			// PHP config editing only applies to the managed install;
-			// mark it when the detected binary is Exposely's own.
-			if managed, version := managedPHPVersionFromPath(a.appDataDir, p); managed {
-				settingsValue.Stack.UseManagedPHP = true
-				settingsValue.Stack.ManagedPHPVersion = version
-			}
-			filled = append(filled, "php: "+p)
-		}
-	}
-	if strings.TrimSpace(settingsValue.Stack.MySQLDBinaryPath) == "" {
-		if p := found[stacks.ServiceMySQL]; p != "" {
-			settingsValue.Stack.MySQLDBinaryPath = p
-			filled = append(filled, "mysql: "+p)
-		}
-	}
-
-	if len(filled) == 0 {
+	if filledMsg == "" {
 		a.pushLog(models.LogEntry{
 			Timestamp: nowStamp(),
 			Source:    "stack",
@@ -2107,16 +2156,12 @@ func (a *App) DetectStackBinaries() (models.AppState, error) {
 		})
 		return a.RefreshState()
 	}
-
-	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
-		return models.AppState{}, err
-	}
 	a.applyStackConfigs(settingsValue)
 	a.pushLog(models.LogEntry{
 		Timestamp: nowStamp(),
 		Source:    "stack",
 		Level:     "success",
-		Message:   "Auto-detected stack binaries: " + strings.Join(filled, "; "),
+		Message:   "Auto-detected stack binaries: " + filledMsg,
 	})
 	return a.RefreshState()
 }
@@ -2126,23 +2171,24 @@ func (a *App) DetectStackBinaries() (models.AppState, error) {
 // call is a no-op that just re-points the settings (useful after a
 // user manually cleared the path).
 func (a *App) InstallManagedNginx() (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return models.AppState{}, err
-	}
 	a.pushLog(models.LogEntry{
 		Timestamp: nowStamp(),
 		Source:    "stack",
 		Level:     "info",
 		Message:   fmt.Sprintf("Installing nginx %s to %s ...", stacks.NginxVersion, stacks.NginxInstallDir(a.appDataDir)),
 	})
+	// Download outside the store lock, then persist the path atomically.
 	_, exePath, err := stacks.InstallNginx(a.appDataDir)
 	if err != nil {
 		return models.AppState{}, err
 	}
 
-	settingsValue.Stack.NginxBinaryPath = exePath
-	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+	settingsValue, err := a.store.Update(func(latest *models.AppSettings) error {
+		latest.Stack.NginxBinaryPath = exePath
+		*latest = a.normalizeSettings(*latest)
+		return nil
+	})
+	if err != nil {
 		return models.AppState{}, err
 	}
 	a.applyStackConfigs(settingsValue)
@@ -2162,23 +2208,24 @@ func (a *App) InstallManagedNginx() (models.AppState, error) {
 // existing managed data dir (e.g. migrated from EnvKit) keeps its
 // databases.
 func (a *App) InstallManagedMariaDB() (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
-		return models.AppState{}, err
-	}
 	a.pushLog(models.LogEntry{
 		Timestamp: nowStamp(),
 		Source:    "stack",
 		Level:     "info",
 		Message:   fmt.Sprintf("Installing MariaDB %s to %s ...", stacks.MariaDBVersion, stacks.MariaDBInstallDir(a.appDataDir)),
 	})
+	// Download outside the store lock, then persist the path atomically.
 	_, exePath, err := stacks.InstallMariaDB(a.appDataDir)
 	if err != nil {
 		return models.AppState{}, err
 	}
 
-	settingsValue.Stack.MySQLDBinaryPath = exePath
-	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
+	settingsValue, err := a.store.Update(func(latest *models.AppSettings) error {
+		latest.Stack.MySQLDBinaryPath = exePath
+		*latest = a.normalizeSettings(*latest)
+		return nil
+	})
+	if err != nil {
 		return models.AppState{}, err
 	}
 	a.applyStackConfigs(settingsValue)
@@ -2197,39 +2244,43 @@ func (a *App) InstallManagedMariaDB() (models.AppState, error) {
 // user-supplied PHP path it regenerates nothing and returns a clear
 // error instead of silently editing someone else's install.
 func (a *App) SavePHPConfig(memoryLimit, uploadMaxFilesize, postMaxSize string, maxExecutionTime int, extraExtensions []string) (models.AppState, error) {
-	settingsValue, err := a.store.Load()
-	if err != nil {
+	phpDir := ""
+	ini := stacks.PHPIniSettings{}
+	iniPath := ""
+	if _, err := a.store.Update(func(latest *models.AppSettings) error {
+		if !latest.Stack.UseManagedPHP {
+			return errors.New("PHP settings apply to the Exposely-managed PHP. Install it first (Install PHP button)")
+		}
+		dir := stacks.ActivePHPDirFor(a.appDataDir, latest.Stack.ManagedPHPVersion)
+		if !stacks.PHPDirHasBins(dir) {
+			return errors.New("PHP settings apply to the Exposely-managed PHP. Install it first (Install PHP button)")
+		}
+
+		latest.Stack.PHPMemoryLimit = strings.TrimSpace(memoryLimit)
+		latest.Stack.PHPUploadMaxFilesize = strings.TrimSpace(uploadMaxFilesize)
+		latest.Stack.PHPPostMaxSize = strings.TrimSpace(postMaxSize)
+		latest.Stack.PHPMaxExecutionTime = maxExecutionTime
+		latest.Stack.PHPExtraExtensions = extraExtensions
+		*latest = a.normalizeSettings(*latest)
+
+		phpDir = dir
+		ini = stacks.PHPIniSettings{
+			MemoryLimit:       latest.Stack.PHPMemoryLimit,
+			UploadMaxFilesize: latest.Stack.PHPUploadMaxFilesize,
+			PostMaxSize:       latest.Stack.PHPPostMaxSize,
+			MaxExecutionTime:  latest.Stack.PHPMaxExecutionTime,
+			ExtraExtensions:   latest.Stack.PHPExtraExtensions,
+		}
+		iniPath = stacks.PhpIniPath(dir)
+		return nil
+	}); err != nil {
 		return models.AppState{}, err
 	}
-	if !settingsValue.Stack.UseManagedPHP {
-		return models.AppState{}, errors.New("PHP settings apply to the Exposely-managed PHP. Install it first (Install PHP button)")
-	}
-	phpDir := stacks.ActivePHPDirFor(a.appDataDir, settingsValue.Stack.ManagedPHPVersion)
-	if !stacks.PHPDirHasBins(phpDir) {
-		return models.AppState{}, errors.New("PHP settings apply to the Exposely-managed PHP. Install it first (Install PHP button)")
-	}
 
-	settingsValue.Stack.PHPMemoryLimit = strings.TrimSpace(memoryLimit)
-	settingsValue.Stack.PHPUploadMaxFilesize = strings.TrimSpace(uploadMaxFilesize)
-	settingsValue.Stack.PHPPostMaxSize = strings.TrimSpace(postMaxSize)
-	settingsValue.Stack.PHPMaxExecutionTime = maxExecutionTime
-	settingsValue.Stack.PHPExtraExtensions = extraExtensions
-	if err := a.store.Save(a.normalizeSettings(settingsValue)); err != nil {
-		return models.AppState{}, err
-	}
-
-	s := stacks.PHPIniSettings{
-		MemoryLimit:       settingsValue.Stack.PHPMemoryLimit,
-		UploadMaxFilesize: settingsValue.Stack.PHPUploadMaxFilesize,
-		PostMaxSize:       settingsValue.Stack.PHPPostMaxSize,
-		MaxExecutionTime:  settingsValue.Stack.PHPMaxExecutionTime,
-		ExtraExtensions:   settingsValue.Stack.PHPExtraExtensions,
-	}
-	iniPath := stacks.PhpIniPath(phpDir)
 	// Keep a CA bundle beside PHP so regenerated php.ini can point curl
 	// and openssl at it (avoids cURL 60 on Turnstile / external HTTPS).
 	stacks.EnsureCACert(phpDir)
-	if err := stacks.WriteFile(iniPath, stacks.PHPIniTemplateWith(phpDir, s)); err != nil {
+	if err := stacks.WriteFile(iniPath, stacks.PHPIniTemplateWith(phpDir, ini)); err != nil {
 		return models.AppState{}, err
 	}
 	a.pushLog(models.LogEntry{
@@ -2274,8 +2325,15 @@ func (a *App) GetPHPConfig() map[string]interface{} {
 // Exposely-managed nginx so the site is served locally, and returns the
 // origin URL the tunnel should use (http://127.0.0.1:<nginxPort>).
 //
-// It reports managed=false when the stack feature is not configured
-// (no nginx binary) so callers keep the legacy behaviour untouched.
+// managed=false (with a nil error) means the managed-stack feature is
+// not applicable and callers keep the legacy behaviour untouched: nginx
+// is not configured, the project has no local host, or the project has
+// no folder and is meant to be served through its origin URL instead.
+//
+// managed=true with an error means the stack IS configured but serving
+// this site failed — callers must abort the share rather than fall
+// back to the default service URL, which would publish whatever
+// unrelated app answers on that port to the public internet.
 //
 // Steps:
 //  1. Verify nginx (and php-cgi for PHP sites) binaries are configured.
@@ -2286,16 +2344,19 @@ func (a *App) GetPHPConfig() map[string]interface{} {
 //     the running nginx; if it is not running yet, start it.
 //  5. Make sure php-cgi is running for PHP sites.
 //  6. Wait until the port answers before declaring success.
-func (a *App) ensureManagedVHost(project models.ProjectPreset, settingsValue models.AppSettings) (string, bool) {
+func (a *App) ensureManagedVHost(project models.ProjectPreset, settingsValue models.AppSettings) (string, bool, error) {
 	stackCfg := settingsValue.Stack
 	nginxPath := strings.TrimSpace(stackCfg.NginxBinaryPath)
 	if nginxPath == "" || project.LocalHost == "" {
-		return "", false
+		return "", false, nil
+	}
+	if strings.TrimSpace(project.ProjectPath) == "" {
+		return "", false, nil
 	}
 	host := strings.ToLower(strings.TrimSpace(project.LocalHost))
-	projectDir, err := a.resolveProjectDirectory(project.ProjectPath)
-	if err != nil {
-		return "", false
+	projectDir, dirErr := a.resolveProjectDirectory(project.ProjectPath)
+	if dirErr != nil {
+		return "", true, dirErr
 	}
 
 	root := stacks.ResolveProjectRoot(projectDir)
@@ -2310,14 +2371,12 @@ func (a *App) ensureManagedVHost(project models.ProjectPreset, settingsValue mod
 		Root:        root,
 		PHP:         usePHP,
 	}); err != nil {
-		a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: "Could not save site registration: " + err.Error()})
-		return "", false
+		return "", true, fmt.Errorf("could not save site registration: %w", err)
 	}
 
 	// 4. Regenerate the conf from the full registry and apply it.
 	if err := a.regenerateManagedNginxConf(settingsValue, registry); err != nil {
-		a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: "Could not regenerate nginx conf: " + err.Error()})
-		return "", false
+		return "", true, fmt.Errorf("could not regenerate nginx conf: %w", err)
 	}
 
 	// 5. PHP sites need php-cgi up before nginx can serve them.
@@ -2325,8 +2384,7 @@ func (a *App) ensureManagedVHost(project models.ProjectPreset, settingsValue mod
 		a.applyStackConfigs(settingsValue)
 		if st := a.stacks.Status(stacks.ServicePHP); !st.Running {
 			if st := a.stacks.Start(stacks.ServicePHP); !st.Running && st.LastError != "" {
-				a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: "php-cgi failed to start: " + st.LastError})
-				return "", false
+				return "", true, fmt.Errorf("php-cgi failed to start: %s", st.LastError)
 			}
 		}
 	}
@@ -2336,29 +2394,25 @@ func (a *App) ensureManagedVHost(project models.ProjectPreset, settingsValue mod
 	nginxRoot := filepath.Dir(nginxPath)
 	confPath, err := a.stackNginxConfPath()
 	if err != nil {
-		return "", false
+		return "", true, err
 	}
 	if st := a.stacks.Status(stacks.ServiceNginx); st.Running {
 		if err := stacks.NginxConfigTest(nginxPath, nginxRoot, confPath); err != nil {
-			a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: err.Error()})
-			return "", false
+			return "", true, err
 		}
 		if err := stacks.ReloadNginx(nginxPath, nginxRoot, confPath); err != nil {
-			a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: err.Error()})
-			return "", false
+			return "", true, err
 		}
 	} else {
 		if st := a.stacks.Start(stacks.ServiceNginx); !st.Running && st.LastError != "" {
-			a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: "nginx failed to start: " + st.LastError})
-			return "", false
+			return "", true, fmt.Errorf("nginx failed to start: %s", st.LastError)
 		}
 	}
 
 	// 6. Wait for the port, then hand the tunnel our origin.
 	port := stackCfg.EffectiveNginxPort()
 	if err := stacks.WaitForPort("127.0.0.1", port, 5*time.Second); err != nil {
-		a.pushLog(models.LogEntry{Timestamp: nowStamp(), Source: "stack", Level: "error", Message: err.Error()})
-		return "", false
+		return "", true, err
 	}
 	origin := fmt.Sprintf("http://127.0.0.1:%d", port)
 	a.pushLog(models.LogEntry{
@@ -2367,7 +2421,7 @@ func (a *App) ensureManagedVHost(project models.ProjectPreset, settingsValue mod
 		Level:     "success",
 		Message:   fmt.Sprintf("Serving %s from %s on %s via the Exposely-managed nginx", host, root, origin),
 	})
-	return origin, true
+	return origin, true, nil
 }
 
 // regenerateManagedNginxConf writes nginx.conf covering every
@@ -2617,15 +2671,42 @@ func (a *App) normalizeSettings(input models.AppSettings) models.AppSettings {
 		output.Projects[i].LocalURL = strings.TrimSpace(output.Projects[i].LocalURL)
 		output.Projects[i].StartCommand = strings.TrimSpace(output.Projects[i].StartCommand)
 		output.Projects[i].ShareMode = normalizeShareMode(output.Projects[i].ShareMode)
-		if normalizeShareMode(output.Projects[i].ShareMode) == models.ShareModeAuto ||
-			normalizeShareMode(output.Projects[i].ShareMode) == models.ShareModeQuick ||
-			normalizeShareMode(output.Projects[i].ShareMode) == models.ShareModeHostHTML {
+		switch normalizeShareMode(output.Projects[i].ShareMode) {
+		case models.ShareModeStable, models.ShareModeRandomDomain:
+			if strings.TrimSpace(output.Projects[i].PublicURL) == "" {
+				output.Projects[i].PublicURL = a.projectPublicURL(output.Projects[i], output.DefaultDomain)
+			}
+		case models.ShareModeAuto, models.ShareModeQuick:
+			// These modes normally run ephemeral trycloudflare tunnels, but
+			// updateProjectShare persists a named-tunnel URL on them after a
+			// one-shot fixed share. Keep the named-tunnel URL; wipe the rest,
+			// so stale quick URLs never linger.
+			if !a.projectURLIsNamedTunnel(output.Projects[i].PublicURL, output.DefaultDomain) {
+				output.Projects[i].PublicURL = ""
+			}
+		default: // host-html: always ephemeral
 			output.Projects[i].PublicURL = ""
-		} else if strings.TrimSpace(output.Projects[i].PublicURL) == "" {
-			output.Projects[i].PublicURL = a.projectPublicURL(output.Projects[i], output.DefaultDomain)
 		}
 	}
 	return output
+}
+
+// projectURLIsNamedTunnel reports whether the supplied public URL is one of
+// the app's persistent named-tunnel addresses (https://<sub>.<DefaultDomain>)
+// rather than an ephemeral quick-tunnel host like <random>.trycloudflare.com.
+// Named shares are rejected for the "example.com" placeholder domain, so URLs
+// under it can never be real and must not count as persistent.
+func (a *App) projectURLIsNamedTunnel(rawURL string, domain string) bool {
+	dom := strings.ToLower(strings.TrimSpace(domain))
+	if dom == "" || dom == "example.com" {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	return host != "" && strings.HasSuffix(host, "."+dom)
 }
 
 func (a *App) resolveLicenseState(token string) models.LicenseState {
@@ -3016,7 +3097,14 @@ func (a *App) isAdminLicensed() bool {
 
 func (a *App) projectPublicURL(project models.ProjectPreset, domain string) string {
 	switch normalizeShareMode(project.ShareMode) {
-	case models.ShareModeAuto, models.ShareModeQuick, models.ShareModeHostHTML:
+	case models.ShareModeAuto, models.ShareModeQuick:
+		// Keep a named-tunnel URL persisted by an earlier fixed share; a
+		// plain quick-tunnel project has none.
+		if a.projectURLIsNamedTunnel(project.PublicURL, domain) {
+			return strings.TrimSpace(project.PublicURL)
+		}
+		return ""
+	case models.ShareModeHostHTML:
 		return ""
 	case models.ShareModeRandomDomain:
 		return strings.TrimSpace(project.PublicURL)

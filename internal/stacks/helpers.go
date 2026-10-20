@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -152,6 +153,46 @@ func PortAvailable(port int) bool {
 	}
 	_ = ln.Close()
 	return true
+}
+
+// ListenPortOwnedByPID reports whether a TCP LISTENING socket on the
+// supplied port belongs to the given process. Used to special-case the
+// managed nginx holding a port (e.g. 80): when the port is occupied by
+// our own nginx, a config regeneration must KEEP the listen line —
+// dropping it makes `nginx -s reload` close the socket and silently
+// break every site that depended on it. PortAvailable is insufficient
+// there because it cannot distinguish "foreign app owns the port" from
+// "our nginx owns the port". Best-effort: on parse trouble it reports
+// false (the safe skip-80 behaviour callers already had).
+func ListenPortOwnedByPID(port int, pid int) bool {
+	if port <= 0 || pid <= 0 {
+		return false
+	}
+	cmd := exec.Command("netstat", "-ano", "-p", "tcp")
+	cmd.SysProcAttr = sysproc.Hidden()
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	portSuffix := fmt.Sprintf(":%d", port)
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		// Proto  Local  Foreign  State  PID (header rows have fewer
+		// columns or non-address fields and simply fail these checks).
+		if len(fields) < 5 || !strings.EqualFold(fields[0], "TCP") {
+			continue
+		}
+		if !strings.EqualFold(fields[3], "LISTENING") {
+			continue
+		}
+		if !strings.HasSuffix(fields[1], portSuffix) {
+			continue
+		}
+		if owner, err := strconv.Atoi(fields[len(fields)-1]); err == nil && owner == pid {
+			return true
+		}
+	}
+	return false
 }
 
 // WaitForPort is a tiny readiness helper: it retries a TCP dial until the

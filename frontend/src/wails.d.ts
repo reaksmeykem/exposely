@@ -19,6 +19,7 @@ declare global {
           CreateTunnel(): Promise<AppState>;
           RunNpmBuild(id: string): Promise<void>;
           OpenPublicURL(id: string): Promise<void>;
+          OpenProjectFolder(id: string): Promise<void>;
           OpenConfigFile(): Promise<void>;
           OpenSettingsFile(): Promise<void>;
           BrowseProjectFolder(currentPath: string): Promise<string>;

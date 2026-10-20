@@ -168,10 +168,26 @@ function formatProjectURL(project: ProjectPreset, domain: string): string {
   return '';
 }
 
+function hasPersistedNamedURL(project: ProjectPreset): boolean {
+  const url = (project.publicURL || '').trim();
+  if (!url.toLowerCase().startsWith('https://')) return false;
+  const domain = (state.appState?.settings.defaultDomain || '').trim().toLowerCase();
+  if (!isMeaningfulDomain(domain)) return false;
+  try {
+    return new URL(url).hostname.toLowerCase().endsWith('.' + domain);
+  } catch {
+    return false;
+  }
+}
+
 function usesEphemeralURL(project: ProjectPreset): boolean {
   // trycloudflare quick tunnels and HTML shares get a new address each
-  // start. Fixed / random-domain named-tunnel URLs are persisted.
-  return project.shareMode === 'auto' || project.shareMode === 'quick' || project.shareMode === 'host-html';
+  // start. Fixed / random-domain named-tunnel URLs are persisted —
+  // including a fixed share started from a quick/auto project, whose URL
+  // lives on the app's own domain and survives restarts.
+  if (project.shareMode === 'host-html') return true;
+  if (project.shareMode !== 'auto' && project.shareMode !== 'quick') return false;
+  return !hasPersistedNamedURL(project);
 }
 
 function isMeaningfulDomain(domain: string): boolean {
@@ -554,6 +570,14 @@ interface FocusSnapshot {
   selectionEnd: number | null;
 }
 
+// form.id is shadowed by any control named "id" (HTMLFormElement named
+// getters win over the IDL attribute), and the project form has
+// <input name="id">. Read the attribute so its snapshot keys stay stable
+// and match the "project-form::" refresh filter.
+function formSnapshotKey(form: HTMLFormElement): string {
+  return form.getAttribute('id') || form.className;
+}
+
 function captureFormSnapshot(): { fields: FormSnapshot; focus: FocusSnapshot | null } {
   const fields: FormSnapshot = {};
   let focus: FocusSnapshot | null = null;
@@ -562,7 +586,7 @@ function captureFormSnapshot(): { fields: FormSnapshot; focus: FocusSnapshot | n
       const input = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
       const name = input.name;
       if (!name) continue;
-      const key = `${form.id || form.className}::${name}`;
+      const key = `${formSnapshotKey(form)}::${name}`;
       if (input instanceof HTMLInputElement && (input.type === 'checkbox' || input.type === 'radio')) {
         if (input.type === 'radio' && !input.checked) continue;
         fields[key] = input.checked ? '1' : '';
@@ -573,7 +597,7 @@ function captureFormSnapshot(): { fields: FormSnapshot; focus: FocusSnapshot | n
         const start = 'selectionStart' in input ? input.selectionStart : null;
         const end = 'selectionEnd' in input ? input.selectionEnd : null;
         focus = {
-          formKey: form.id || form.className,
+          formKey: formSnapshotKey(form),
           name,
           selectionStart: typeof start === 'number' ? start : null,
           selectionEnd: typeof end === 'number' ? end : null,
@@ -592,7 +616,7 @@ function restoreFormSnapshot(snap: { fields: FormSnapshot; focus: FocusSnapshot 
       const input = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
       const name = input.name;
       if (!name) continue;
-      const key = `${form.id || form.className}::${name}`;
+      const key = `${formSnapshotKey(form)}::${name}`;
       if (!(key in snap.fields)) continue;
       const value = snap.fields[key];
       if (input instanceof HTMLInputElement && (input.type === 'checkbox' || input.type === 'radio')) {
@@ -600,7 +624,7 @@ function restoreFormSnapshot(snap: { fields: FormSnapshot; focus: FocusSnapshot 
         continue;
       }
       input.value = value;
-      if (snap.focus && (form.id || form.className) === snap.focus.formKey && name === snap.focus.name) {
+      if (snap.focus && formSnapshotKey(form) === snap.focus.formKey && name === snap.focus.name) {
         focused = input;
       }
     }
@@ -619,7 +643,14 @@ function restoreFormSnapshot(snap: { fields: FormSnapshot; focus: FocusSnapshot 
   }
 }
 
-function render() {
+// render() optionally accepts { refreshProjectForm: true } for renders that
+// follow a deliberate state change of the project editor (browsed folder,
+// random subdomain, new/edit project). The DOM snapshot taken at the top of
+// render() still holds the pre-change values, so restoring it wholesale
+// would show the old path again — and Save reads the DOM, silently losing
+// the change. Those renders keep every other form's drafts but drop the
+// project-form keys so the form shows the new state values.
+function render(options: { refreshProjectForm?: boolean } = {}) {
   const formSnap = captureFormSnapshot();
 
   if (state.fatalError) {
@@ -655,6 +686,9 @@ function render() {
   state.selectedProjectId = project?.id ?? null;
   const tunnelStatus = appState.status;
   const projectUrl = project ? resolvedProjectURL(project, appState) : '';
+  const projectFolderPath = project && !looksLikeURL(project.projectPath.trim())
+    ? project.projectPath.trim()
+    : '';
   const hasProjects = appState.settings.projects.length > 0;
   const shareToolReady = appState.cloudflaredDetected;
   const hasDomain = isMeaningfulDomain(appState.settings.defaultDomain);
@@ -1028,6 +1062,13 @@ function render() {
                         <div class="hero-project">
                           <div class="hero-project-main">
                             <strong>${escapeHtml(projectPrimaryTarget(project))}</strong>
+                            ${projectFolderPath ? `<div class="hero-project-path-row">
+                              <p class="hero-project-path" title="${escapeHtml(projectFolderPath)}">${escapeHtml(projectFolderPath)}</p>
+                              <button type="button" class="secondary inline-copy-button" data-action="open-project-folder" data-id="${escapeHtml(project.id)}" aria-label="${t('openFolder')}">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                                ${t('openFolder')}
+                              </button>
+                            </div>` : ''}
                             <div class="inline-url-row">
                               <p>${escapeHtml(projectUrl || t('noPublicUrl'))}</p>
                               ${projectUrl ? `<button type="button" class="secondary inline-copy-button" data-action="open-url" aria-label="${t('open')}">
@@ -1257,7 +1298,16 @@ function render() {
   `;
 
   bindForms();
-  restoreFormSnapshot(formSnap);
+  if (options.refreshProjectForm) {
+    const fields: FormSnapshot = {};
+    for (const [key, value] of Object.entries(formSnap.fields)) {
+      if (!key.startsWith('project-form::')) fields[key] = value;
+    }
+    const focus = formSnap.focus && formSnap.focus.formKey !== 'project-form' ? formSnap.focus : null;
+    restoreFormSnapshot({ fields, focus });
+  } else {
+    restoreFormSnapshot(formSnap);
+  }
 
   if (!tabChanged) {
     // Re-rendering on the same tab (e.g. after Save Settings, Refresh, or
@@ -1564,7 +1614,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       state.editorOpen = true;
       state.editorMode = 'create';
       state.editorProject = blankProject();
-      render();
+      render({ refreshProjectForm: true });
       return;
     case 'edit-project':
       if (selectedProject()) {
@@ -1572,7 +1622,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
         state.editorMode = 'edit';
         state.editorProject = { ...selectedProject()! };
         state.projectMenuOpen = false;
-        render();
+        render({ refreshProjectForm: true });
       }
       return;
     case 'close-editor':
@@ -1598,14 +1648,14 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
         if (state.editorProject.shareMode === 'quick' && !state.editorProject.localHost.trim()) {
           state.editorProject.localHost = inferredLocalHost;
         }
-        render();
+        render({ refreshProjectForm: true });
       }
       return;
     }
     case 'random-subdomain': {
       syncEditorFromForm();
       state.editorProject.subdomain = randomSubdomainValue();
-      render();
+      render({ refreshProjectForm: true });
       return;
     }
     case 'php-install': {
@@ -1759,7 +1809,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
     }
   }
 
-  if (!id && ['share-project', 'share-random', 'share-quick', 'share-fixed', 'regenerate-url', 'open-url', 'npm-build', 'test-project', 'delete-project'].includes(action)) {
+  if (!id && ['share-project', 'share-random', 'share-quick', 'share-fixed', 'regenerate-url', 'open-url', 'open-project-folder', 'npm-build', 'test-project', 'delete-project'].includes(action)) {
     setNotice('error', t('selectProjectFirst'));
     return;
   }
@@ -1983,6 +2033,9 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
     }
     case 'open-url':
       await withAction(t('open'), () => api.openPublicURL(id!));
+      return;
+    case 'open-project-folder':
+      await withAction(t('openFolder'), () => api.openProjectFolder(id!));
       return;
     case 'npm-build': {
       const result = await withAction('npm build', () => api.runNpmBuild(id!));

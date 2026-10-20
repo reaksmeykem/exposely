@@ -651,6 +651,28 @@ label {
   margin-bottom: 8px;
 }
 
+.hero-project-path-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: -4px 0 10px;
+}
+
+.hero-project-path-row .hero-project-path {
+  margin: 0;
+  min-width: 0;
+}
+
+.hero-project-path {
+  margin: -4px 0 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .inline-url-row {
   display: flex;
   align-items: center;

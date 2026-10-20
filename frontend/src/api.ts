@@ -35,6 +35,8 @@ export const api = {
   clearLicense: (): Promise<AppState> => (appBinding() as AppBindings & { ClearLicense(): Promise<AppState> }).ClearLicense(),
   runNpmBuild: (id: string): Promise<void> => appBinding().RunNpmBuild(id),
   openPublicURL: (id: string): Promise<void> => appBinding().OpenPublicURL(id),
+  openProjectFolder: (id: string): Promise<void> =>
+    (appBinding() as AppBindings & { OpenProjectFolder(id: string): Promise<void> }).OpenProjectFolder(id),
   openConfigFile: (): Promise<void> => appBinding().OpenConfigFile(),
   openSettingsFile: (): Promise<void> => appBinding().OpenSettingsFile(),
   openLatestRelease: (): Promise<void> => (appBinding() as AppBindings & { OpenLatestRelease(): Promise<void> }).OpenLatestRelease(),

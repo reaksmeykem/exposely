@@ -34,7 +34,10 @@ func (s *Store) Path() string {
 func (s *Store) Load() (models.AppSettings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
 
+func (s *Store) loadLocked() (models.AppSettings, error) {
 	if _, err := os.Stat(s.path); errors.Is(err, os.ErrNotExist) {
 		defaults := models.DefaultSettings()
 		if err := s.write(defaults); err != nil {
@@ -62,6 +65,34 @@ func (s *Store) Load() (models.AppSettings, error) {
 			return models.AppSettings{}, err
 		}
 		settingsValue = recovered
+	}
+	return settingsValue, nil
+}
+
+// Update runs mutate with exclusive access to the settings file and
+// persists the result atomically in one step.
+//
+// A plain Load→(do things)→Save pair is a lost-update trap: Wails runs
+// every binding call on its own goroutine, so two overlapping actions
+// both Load the same baseline and whichever saves last resurrects the
+// older state — a just-saved project or tunnel URL silently disappears.
+// Holding the store lock across the whole read-modify-write serialises
+// them instead. The closure must not call Load/Save/Update itself (the
+// lock is not re-entrant) and must not persist anything unless it
+// returns nil — a non-nil error aborts the write entirely.
+func (s *Store) Update(mutate func(settings *models.AppSettings) error) (models.AppSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	settingsValue, err := s.loadLocked()
+	if err != nil {
+		return models.AppSettings{}, err
+	}
+	if err := mutate(&settingsValue); err != nil {
+		return models.AppSettings{}, err
+	}
+	if err := s.write(settingsValue); err != nil {
+		return models.AppSettings{}, err
 	}
 	return settingsValue, nil
 }

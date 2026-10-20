@@ -285,10 +285,18 @@ func (m *Manager) Stop(service Service) Status {
 	// Mark not-desired BEFORE killing: the supervisor fires when Wait
 	// returns and must not relaunch a process the user just stopped.
 	p.desired = false
-	// Release our wait handle first so the child does not linger as a
-	// zombie; then kill it. Ignore Kill errors — the process may already
-	// have exited on its own.
-	_ = p.cmd.Process.Kill()
+	// Kill the whole process tree, not just the direct child: nginx on
+	// Windows runs master + worker, and killing the master alone orphans
+	// the worker, which keeps serving the stale config and holding the
+	// listen ports — the next Start then cannot bind. taskkill /T /F
+	// reaches the workers; fall back to a direct kill when it is
+	// unavailable (non-Windows) or fails. Ignore errors — the process
+	// may already have exited on its own.
+	if p.cmd.Process != nil {
+		if err := KillPID(p.cmd.Process.Pid); err != nil {
+			_ = p.cmd.Process.Kill()
+		}
+	}
 	delete(m.procs, service)
 	return m.setStatus(service, false, "")
 }
