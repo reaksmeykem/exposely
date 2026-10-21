@@ -45,6 +45,34 @@ func TestInstalledPHPVersionsFindsLegacyAndVersioned(t *testing.T) {
 	}
 }
 
+func TestInstalledPHPVersionsDedupesLegacyMatchingVersioned(t *testing.T) {
+	appData := t.TempDir()
+
+	// Versioned install of the default version, plus the legacy root
+	// layout holding the same version — the common upgrade path. The
+	// UI must show one chip, not two identical "ACTIVE" entries.
+	vDir := PHPVersionDir(appData, PHPVersion)
+	root := PHPInstallDir(appData)
+	for _, dir := range []string{vDir, root} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"php-cgi.exe", "php.exe"} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	installed := InstalledPHPVersions(appData)
+	if len(installed) != 1 {
+		t.Fatalf("expected only the versioned install, got %d: %+v", len(installed), installed)
+	}
+	if installed[0].Legacy || installed[0].Version != PHPVersion {
+		t.Fatalf("expected versioned %s entry, got %+v", PHPVersion, installed[0])
+	}
+}
+
 func TestInstallPHPVersionRejectsBadVersion(t *testing.T) {
 	if _, _, err := InstallPHPVersion(t.TempDir(), "../evil"); err == nil {
 		t.Fatal("expected error for non-numeric version")

@@ -257,6 +257,15 @@ func (a *App) StartStackService(service string) (models.AppState, error) {
 		return models.AppState{}, fmt.Errorf("unknown stack service %q (use nginx, php, or mysql)", service)
 	}
 
+	// Reuse a service that is already running (e.g. a managed mysqld left
+	// behind by a force-killed previous app instance) instead of spawning
+	// a duplicate that cannot bind its port or open the data files.
+	if adopted, conflict := a.adoptStackServiceIfRunning(settingsValue, normalized, a.stackServicePort(settingsValue, normalized)); conflict != nil {
+		return models.AppState{}, conflict
+	} else if adopted {
+		return a.RefreshState()
+	}
+
 	if normalized == stacks.ServiceMySQL {
 		cfg, _ := a.stacks.Config(stacks.ServiceMySQL)
 		if strings.TrimSpace(cfg.BinaryPath) == "" {
@@ -471,7 +480,92 @@ func (a *App) shutdown(context.Context) {
 }
 
 func (a *App) Bootstrap() (models.AppState, error) {
+	a.adoptRunningStackServices()
 	return a.RefreshState()
+}
+
+// adoptRunningStackServices re-attaches to managed services that survived
+// a previous app instance (in-place update, crash, forced kill). Without
+// this the UI reports them stopped while they still hold their ports and
+// data files, and the next Start spawns a duplicate that aborts on a bind
+// or data-file conflict. Foreign processes occupying a port are left
+// alone here; Start reports them with a clear message.
+func (a *App) adoptRunningStackServices() {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return
+	}
+	settingsValue = a.normalizeSettings(settingsValue)
+	a.applyStackConfigs(settingsValue)
+	for _, service := range []stacks.Service{stacks.ServiceNginx, stacks.ServicePHP, stacks.ServiceMySQL} {
+		_, _ = a.adoptStackServiceIfRunning(settingsValue, service, a.stackServicePort(settingsValue, service))
+	}
+}
+
+// adoptStackServiceIfRunning attaches the service when its port is already
+// served by the same configured binary. Returns adopted=true on success.
+// When the port belongs to some other process it returns a descriptive
+// conflict error instead of letting Start crash-loop against it.
+func (a *App) adoptStackServiceIfRunning(settingsValue models.AppSettings, service stacks.Service, port int) (bool, error) {
+	if port <= 0 {
+		return false, nil
+	}
+	pid := stacks.ListeningPID(port)
+	if pid <= 0 {
+		return false, nil
+	}
+	configured := strings.TrimSpace(a.stacksConfiguredBinary(settingsValue, service))
+	if configured != "" && a.processIsConfiguredBinary(pid, configured) {
+		if status := a.stacks.Adopt(service, pid); status.Running {
+			a.pushLog(models.LogEntry{
+				Timestamp: nowStamp(),
+				Source:    "stack",
+				Level:     "info",
+				Message:   fmt.Sprintf("%s was already running (pid %d, port %d) — reattached", service, pid, port),
+			})
+			return true, nil
+		}
+		return false, nil
+	}
+	return false, a.stackPortConflictError(service, port, pid)
+}
+
+func (a *App) processIsConfiguredBinary(pid int, binaryPath string) bool {
+	actual, err := sysproc.ProcessExecutablePath(pid)
+	if err != nil || strings.TrimSpace(actual) == "" {
+		return false
+	}
+	if abs, absErr := filepath.Abs(actual); absErr == nil {
+		actual = abs
+	}
+	expected, err := filepath.Abs(binaryPath)
+	if err != nil {
+		expected = binaryPath
+	}
+	return strings.EqualFold(filepath.Clean(actual), filepath.Clean(expected))
+}
+
+func (a *App) stackPortConflictError(service stacks.Service, port, pid int) error {
+	owner := ""
+	if path, err := sysproc.ProcessExecutablePath(pid); err == nil && strings.TrimSpace(path) != "" {
+		owner = filepath.Base(path)
+	}
+	if owner == "" {
+		owner = "another process"
+	}
+	return fmt.Errorf("%s cannot start: port %d is already in use by %s (PID %d). Stop that process or change the %s port in Settings", service, port, owner, pid, service)
+}
+
+func (a *App) stackServicePort(settingsValue models.AppSettings, service stacks.Service) int {
+	switch service {
+	case stacks.ServiceNginx:
+		return settingsValue.Stack.EffectiveNginxPort()
+	case stacks.ServicePHP:
+		return settingsValue.Stack.EffectivePHPPort()
+	case stacks.ServiceMySQL:
+		return settingsValue.Stack.EffectiveMySQLPort()
+	}
+	return 0
 }
 
 func (a *App) RefreshState() (models.AppState, error) {

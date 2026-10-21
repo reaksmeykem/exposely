@@ -155,26 +155,22 @@ func PortAvailable(port int) bool {
 	return true
 }
 
-// ListenPortOwnedByPID reports whether a TCP LISTENING socket on the
-// supplied port belongs to the given process. Used to special-case the
-// managed nginx holding a port (e.g. 80): when the port is occupied by
-// our own nginx, a config regeneration must KEEP the listen line —
-// dropping it makes `nginx -s reload` close the socket and silently
-// break every site that depended on it. PortAvailable is insufficient
-// there because it cannot distinguish "foreign app owns the port" from
-// "our nginx owns the port". Best-effort: on parse trouble it reports
-// false (the safe skip-80 behaviour callers already had).
-func ListenPortOwnedByPID(port int, pid int) bool {
-	if port <= 0 || pid <= 0 {
-		return false
+// listeningPIDs returns the process IDs owning TCP LISTENING sockets on
+// the supplied local port. Parses netstat -ano; best-effort (an empty
+// slice on any trouble).
+func listeningPIDs(port int) []int {
+	if port <= 0 || port > 65535 {
+		return nil
 	}
 	cmd := exec.Command("netstat", "-ano", "-p", "tcp")
 	cmd.SysProcAttr = sysproc.Hidden()
 	out, err := cmd.Output()
 	if err != nil {
-		return false
+		return nil
 	}
 	portSuffix := fmt.Sprintf(":%d", port)
+	var pids []int
+	seen := make(map[int]bool)
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
 		// Proto  Local  Foreign  State  PID (header rows have fewer
@@ -188,7 +184,41 @@ func ListenPortOwnedByPID(port int, pid int) bool {
 		if !strings.HasSuffix(fields[1], portSuffix) {
 			continue
 		}
-		if owner, err := strconv.Atoi(fields[len(fields)-1]); err == nil && owner == pid {
+		owner, err := strconv.Atoi(fields[len(fields)-1])
+		if err != nil || owner <= 0 || seen[owner] {
+			continue
+		}
+		seen[owner] = true
+		pids = append(pids, owner)
+	}
+	return pids
+}
+
+// ListeningPID returns the PID owning the TCP listener on the supplied
+// port (0 when the port is free or could not be inspected).
+func ListeningPID(port int) int {
+	pids := listeningPIDs(port)
+	if len(pids) == 0 {
+		return 0
+	}
+	return pids[0]
+}
+
+// ListenPortOwnedByPID reports whether a TCP LISTENING socket on the
+// supplied port belongs to the given process. Used to special-case the
+// managed nginx holding a port (e.g. 80): when the port is occupied by
+// our own nginx, a config regeneration must KEEP the listen line —
+// dropping it makes `nginx -s reload` close the socket and silently
+// break every site that depended on it. PortAvailable is insufficient
+// there because it cannot distinguish "foreign app owns the port" from
+// "our nginx owns the port". Best-effort: on parse trouble it reports
+// false (the safe skip-80 behaviour callers already had).
+func ListenPortOwnedByPID(port int, pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	for _, owner := range listeningPIDs(port) {
+		if owner == pid {
 			return true
 		}
 	}

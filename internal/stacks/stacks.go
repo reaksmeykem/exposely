@@ -82,6 +82,7 @@ type Manager struct {
 // managedProc wraps a running child process plus its metadata.
 type managedProc struct {
 	cmd       *exec.Cmd
+	pid       int
 	startedAt time.Time
 	lastError string
 	// desired is true while the user wants this service running. The
@@ -94,9 +95,9 @@ type managedProc struct {
 	done chan struct{}
 }
 
-// alive reports whether the child process is still running.
+// alive reports whether the tracked process is still running.
 func (p *managedProc) alive() bool {
-	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+	if p == nil || p.done == nil {
 		return false
 	}
 	select {
@@ -187,6 +188,7 @@ func (m *Manager) startLocked(service Service, failures int) Status {
 
 	proc := &managedProc{
 		cmd:       cmd,
+		pid:       cmd.Process.Pid,
 		startedAt: time.Now(),
 		desired:   true,
 		done:      make(chan struct{}),
@@ -291,9 +293,10 @@ func (m *Manager) Stop(service Service) Status {
 	// listen ports — the next Start then cannot bind. taskkill /T /F
 	// reaches the workers; fall back to a direct kill when it is
 	// unavailable (non-Windows) or fails. Ignore errors — the process
-	// may already have exited on its own.
-	if p.cmd.Process != nil {
-		if err := KillPID(p.cmd.Process.Pid); err != nil {
+	// may already have exited on its own. Adopted procs have no exec.Cmd,
+	// so use the recorded PID.
+	if p.pid > 0 {
+		if err := KillPID(p.pid); err != nil && p.cmd != nil && p.cmd.Process != nil {
 			_ = p.cmd.Process.Kill()
 		}
 	}
@@ -312,6 +315,60 @@ func (m *Manager) StopAll() map[Service]Status {
 		out[s] = m.Stop(s)
 	}
 	return out
+}
+
+// Adopt attaches to an already-running service process that this Manager
+// did not spawn — typically a child left behind when a previous app
+// instance was force-killed (an in-place update or crash). Without this
+// the service shows as stopped while still holding its port and data
+// files, and every Start spawns a duplicate that immediately aborts.
+//
+// Adopted processes are reported as running and are stopped by Stop, but
+// they are never auto-restarted: Exposely did not launch them.
+func (m *Manager) Adopt(service Service, pid int) Status {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if pid <= 0 || !ProcessAlive(pid) {
+		return m.statusLocked(service)
+	}
+	if p, ok := m.procs[service]; ok && p.alive() {
+		return m.statusLocked(service)
+	}
+	proc := &managedProc{
+		pid:       pid,
+		startedAt: time.Now(),
+		desired:   false,
+		done:      make(chan struct{}),
+	}
+	m.procs[service] = proc
+	go m.watchAdopted(service, proc)
+	return m.statusLocked(service)
+}
+
+// watchAdopted keeps status honest for a process the manager did not
+// spawn (there is no exec.Cmd.Wait) by polling until it exits.
+func (m *Manager) watchAdopted(service Service, proc *managedProc) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-proc.done:
+			return
+		case <-ticker.C:
+			if ProcessAlive(proc.pid) {
+				continue
+			}
+			m.mu.Lock()
+			if m.procs[service] == proc {
+				close(proc.done)
+				delete(m.procs, service)
+				m.setStatus(service, false, "")
+			}
+			m.mu.Unlock()
+			return
+		}
+	}
 }
 
 // Status returns the current state of one service.
@@ -348,7 +405,7 @@ func (m *Manager) statusLocked(service Service) Status {
 	return Status{
 		Service:   service,
 		Running:   running,
-		PID:       pidOf(p.cmd),
+		PID:       p.pid,
 		StartedAt: startedAt,
 		LastError: p.lastError,
 	}

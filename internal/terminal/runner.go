@@ -7,6 +7,7 @@ package terminal
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -148,9 +149,35 @@ func (r *Runner) Stop() error {
 		return nil
 	}
 	if runtime.GOOS == "windows" {
-		return exec.Command("taskkill", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F").Run()
+		pid := cmd.Process.Pid
+		if err := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run(); err != nil {
+			// taskkill can report failure even when the tree was terminated
+			// (a child vanished mid-kill), and killing an already dead
+			// process returns "Access is denied" on Windows. Stop is
+			// successful as long as the root process is gone; only report
+			// the taskkill error when it is still running.
+			if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) && processRunning(pid) {
+				return err
+			}
+		}
+		return nil
 	}
 	return cmd.Process.Kill()
+}
+
+// processRunning reports whether a PID currently exists (tasklist-based,
+// matching the rest of the app's Windows process checks).
+func processRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH")
+	cmd.SysProcAttr = sysproc.Hidden()
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), strconv.Itoa(pid))
 }
 
 // SendInput writes one line to the command's stdin.

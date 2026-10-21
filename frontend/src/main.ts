@@ -1,7 +1,6 @@
 import './style.css';
 import { api } from './api';
 import { t, setLang, getLang } from './i18n';
-import khFlagUrl from './kh.png';
 import { WindowCenter, WindowIsMaximised, WindowSetMinSize, WindowSetSize, WindowUnmaximise } from '../wailsjs/runtime/runtime';
 import type { AppState, LogEntry, PHPConfigInfo, ProjectPreset, ShareMode, StackServiceStatus, TerminalExitEvent, TerminalLineEvent, TerminalStatus, TunnelStatus } from './types';
 
@@ -19,8 +18,13 @@ interface UIState {
   activeProjectId: string | null;
   projectUrls: Record<string, string>;
   copiedProjectId: string | null;
-  activeTab: 'overview' | 'settings' | 'logs' | 'terminal' | 'about';
+  activeTab: 'overview' | 'settings' | 'logs' | 'about';
+  sidebarCollapsed: boolean;
   projectMenuOpen: boolean;
+  projectPickerOpen: boolean;
+  stackMenuOpen: boolean;
+  stackTab: string;
+  overviewTab: 'project' | 'terminal';
   editorOpen: boolean;
   editorMode: 'create' | 'edit';
   editorProject: ProjectPreset;
@@ -70,6 +74,24 @@ const blankStackDraft = () => ({
   mysqlPort: 3306,
 });
 
+const SIDEBAR_COLLAPSED_KEY = 'exposely.sidebarCollapsed';
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function rememberSidebarCollapsed(collapsed: boolean) {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    // WebView storage can be unavailable; the toggle still works per session.
+  }
+}
+
 const state: UIState = {
   appState: null,
   fatalError: null,
@@ -78,7 +100,12 @@ const state: UIState = {
   projectUrls: {},
   copiedProjectId: null,
   activeTab: 'overview',
+  sidebarCollapsed: readSidebarCollapsed(),
   projectMenuOpen: false,
+  projectPickerOpen: false,
+  stackMenuOpen: false,
+  stackTab: 'nginx',
+  overviewTab: 'project',
   editorOpen: false,
   editorMode: 'create',
   editorProject: blankProject(),
@@ -121,29 +148,8 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#039;');
 }
 
-function languageFlagIcon(lang: string): string {
-  if (lang === 'km') {
-    return `
-      <img
-        class="flag-icon"
-        src="${khFlagUrl}"
-        width="24"
-        height="16"
-        alt="Khmer flag"
-        draggable="false"
-      />
-    `;
-  }
-
-  return `
-    <svg class="flag-icon" viewBox="0 0 36 24" role="img" aria-label="English flag" xmlns="http://www.w3.org/2000/svg">
-      <rect width="36" height="24" rx="3" fill="#012169"/>
-      <path d="M0 0h4.1L36 20.2V24h-4.1L0 3.8V0Zm36 0v3.8L4.1 24H0v-3.8L31.9 0H36Z" fill="#fff"/>
-      <path d="M36 0 0 24h2.8L36 1.8V0ZM0 0l36 24h-2.8L0 1.8V0Z" fill="#c8102e"/>
-      <path d="M15 0h6v24h-6V0ZM0 9h36v6H0V9Z" fill="#fff"/>
-      <path d="M16.2 0h3.6v24h-3.6V0ZM0 10.2h36v3.6H0v-3.6Z" fill="#c8102e"/>
-    </svg>
-  `;
+function languageCode(lang: string): string {
+  return lang === 'km' ? 'KH' : 'EN';
 }
 
 function nextLanguage(): 'en' | 'km' {
@@ -384,12 +390,6 @@ function shareModeLabel(mode: ShareMode): string {
   }
 }
 
-function statusTone(status: TunnelStatus): string {
-  if (status.running) return 'success';
-  if (status.lastError) return 'error';
-  return 'idle';
-}
-
 function formatUptime(seconds: number): string {
   if (!isFinite(seconds) || seconds <= 0) return '0s';
   const s = Math.floor(seconds);
@@ -523,10 +523,14 @@ function logRows(logs: LogEntry[]): string {
     .join('');
 }
 
-function terminalProject(): ProjectPreset | null {
+// A running terminal stays attached to the project it was started for;
+// an idle terminal belongs to the currently selected project. This keeps
+// the panel under each project honest when the selection changes mid-run.
+function terminalOwnerProject(): ProjectPreset | null {
+  const selected = selectedProject();
+  if (!state.terminalRunning) return selected;
   const projects = state.appState?.settings.projects ?? [];
-  const id = state.terminalProjectId || state.selectedProjectId;
-  return projects.find((project) => project.id === id) ?? projects[0] ?? null;
+  return projects.find((entry) => entry.id === state.terminalProjectId) ?? selected;
 }
 
 function terminalOutputHtml(): string {
@@ -538,41 +542,38 @@ function terminalOutputHtml(): string {
     .join('\n');
 }
 
-function renderTerminalPanel(): string {
-  const projects = state.appState?.settings.projects ?? [];
-  const project = terminalProject();
-  const folderPath = project && !looksLikeURL(project.projectPath.trim()) ? project.projectPath.trim() : '';
-  const currentId = project?.id ?? '';
-  const options = projects.length
-    ? projects
-        .map((entry) => `<option value="${escapeHtml(entry.id)}" ${entry.id === currentId ? 'selected' : ''}>${escapeHtml(entry.displayName)}</option>`)
-        .join('')
-    : `<option value="">${escapeHtml(t('noProject'))}</option>`;
+// The terminal lives under the selected project instead of being its own
+// sidebar page: one project at a time, with the command form and output
+// directly below the project details.
+function renderTerminalSection(project: ProjectPreset): string {
+  const owner = terminalOwnerProject();
+  const runningElsewhere = state.terminalRunning && !!owner && owner.id !== project.id;
+  const folderPath = !looksLikeURL(project.projectPath.trim()) ? project.projectPath.trim() : '';
+
+  if (runningElsewhere && owner) {
+    return `
+      <section class="panel terminal-panel terminal-in-project">
+        <div class="terminal-section-head">
+          <p class="eyebrow">${t('terminal')}</p>
+        </div>
+        <p class="hint">${escapeHtml(t('terminalRunningElsewhere').replace('{name}', owner.displayName))}</p>
+        <div class="action-row">
+          <button type="button" class="danger-button" data-action="terminal-stop">${t('stop')}</button>
+        </div>
+      </section>
+    `;
+  }
 
   return `
-    <section class="panel terminal-panel">
-      <div class="panel-header">
-        <div>
-          <p class="eyebrow">${t('terminal')}</p>
-          <h2>${escapeHtml(t('terminalSubtitle'))}</h2>
-        </div>
-        <span class="pill ${state.terminalRunning ? 'pill-success' : 'pill-outline'}">${state.terminalRunning ? t('running') : t('stopped')}</span>
-      </div>
-      <div class="terminal-toolbar">
-        <label class="terminal-project-label">${t('terminalProject')}
-          <select id="terminal-project" name="terminalProject" ${state.terminalRunning ? 'disabled' : ''}>${options}</select>
-        </label>
-        <div class="terminal-folder">
-          <span class="summary-label">${t('projectFolder')}</span>
-          <p class="hero-project-path" title="${escapeHtml(folderPath)}">${escapeHtml(folderPath || '—')}</p>
-          <button type="button" class="secondary" data-action="open-project-folder" data-id="${escapeHtml(currentId)}" ${folderPath ? '' : 'disabled'}>${t('openFolder')}</button>
-        </div>
-      </div>
+    <section class="panel terminal-panel terminal-in-project">
+      ${folderPath ? `<div class="terminal-section-head">
+        <span class="terminal-cwd" title="${escapeHtml(folderPath)}">${escapeHtml(folderPath)}</span>
+      </div>` : ''}
       <form id="terminal-command-form" class="terminal-command-row">
         <label class="wide">${t('terminalCommand')}
           <input name="terminalCommand" value="${escapeHtml(state.terminalCommand)}" placeholder="npm run dev" spellcheck="false" autocomplete="off" />
         </label>
-        <button type="submit" ${state.terminalRunning || !project ? 'disabled' : ''}>${t('terminalRun')}</button>
+        <button type="submit" ${state.terminalRunning ? 'disabled' : ''}>${t('terminalRun')}</button>
         <button type="button" class="danger-button" data-action="terminal-stop" ${state.terminalRunning ? '' : 'disabled'}>${t('stop')}</button>
         <button type="button" class="secondary" data-action="terminal-clear">${t('terminalClear')}</button>
       </form>
@@ -581,7 +582,7 @@ function renderTerminalPanel(): string {
         <input name="terminalInput" placeholder="${escapeHtml(t('terminalInputPlaceholder'))}" autocomplete="off" ${state.terminalRunning ? '' : 'disabled'} />
         <button type="submit" class="secondary" ${state.terminalRunning ? '' : 'disabled'}>${t('terminalSend')}</button>
       </form>
-      ${project && !folderPath ? `<p class="hint">${escapeHtml(t('terminalNoFolder'))}</p>` : ''}
+      ${folderPath ? '' : `<p class="hint">${escapeHtml(t('terminalNoFolder'))}</p>`}
     </section>
   `;
 }
@@ -592,7 +593,7 @@ function appendTerminalLine(stream: string, line: string) {
     state.terminalLines.splice(0, state.terminalLines.length - 2000);
   }
   const output = root.querySelector<HTMLElement>('#terminal-output');
-  if (!output || state.activeTab !== 'terminal') return;
+  if (!output) return;
 
   const empty = output.querySelector('.terminal-empty');
   if (empty) empty.remove();
@@ -606,9 +607,9 @@ function appendTerminalLine(stream: string, line: string) {
 }
 
 async function runTerminalCommand() {
-  const projects = state.appState?.settings.projects ?? [];
-  const projectId = state.terminalProjectId || state.selectedProjectId;
-  const project = projects.find((entry) => entry.id === projectId);
+  // The terminal always runs for the project currently shown in the
+  // overview — no separate terminal project selection any more.
+  const project = selectedProject();
   if (!project) {
     setNotice('error', t('selectProjectFirst'));
     return;
@@ -632,24 +633,33 @@ async function runTerminalCommand() {
   render();
 }
 
+function projectRowSearchText(project: ProjectPreset): string {
+  return [
+    project.displayName,
+    projectTypeLabel(project),
+    project.localHost,
+    project.localURL,
+    project.projectPath,
+    project.publicURL,
+    project.subdomain,
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
 function projectRows(appState: AppState): string {
-  const query = state.projectSearch.trim().toLowerCase();
-  const projects = appState.settings.projects.filter((project) => {
-    if (!query) return true;
-    return [project.displayName, projectTypeLabel(project), project.localHost, project.localURL, project.projectPath, project.publicURL, project.subdomain]
-      .some((value) => value.toLowerCase().includes(query));
-  });
+  const projects = appState.settings.projects;
 
   if (projects.length === 0) {
-    return `<div class="empty-list">${escapeHtml(query ? t('noMatchingProjects') : t('noProject'))}</div>`;
+    return `<div class="empty-list">${escapeHtml(t('noProject'))}</div>`;
   }
 
-  return projects
+  const rows = projects
     .map((project) => {
       const isSelected = selectedProject()?.id === project.id;
       const showRunning = state.activeProjectId === project.id && appState.status.running;
       return `
-        <button type="button" class="project-row ${isSelected ? 'selected' : ''}" data-action="select-project" data-id="${escapeHtml(project.id)}">
+        <button type="button" class="project-row ${isSelected ? 'selected' : ''}" data-action="select-project" data-id="${escapeHtml(project.id)}" data-search="${escapeHtml(projectRowSearchText(project))}">
           <div class="project-copy">
             <strong>${escapeHtml(project.displayName)}</strong>
             <span class="project-type-tag">${escapeHtml(projectTypeLabel(project))}</span>
@@ -659,6 +669,8 @@ function projectRows(appState: AppState): string {
       `;
     })
     .join('');
+
+  return `${rows}<div class="empty-list picker-empty" hidden>${escapeHtml(t('noMatchingProjects'))}</div>`;
 }
 
 // Tracks the active tab from the previous render so we can scroll to the top
@@ -686,18 +698,17 @@ function restoreMainScroll(scrollTop: number) {
   scroller.scrollTop = Math.max(0, Math.min(scrollTop, max));
 }
 
-// captureProjectsScroll/restoreProjectsScroll do the same for the
-// sidebar's project list (.sidebar-projects-section), which scrolls
-// independently of the main content. Without this, every tunnel
-// status/log re-render snaps the list back to the top while the user
-// is scrolling through long project lists.
+// captureProjectsScroll/restoreProjectsScroll do the same for the project
+// picker's list (.picker-list), which scrolls on its own inside the modal.
+// Without this, a tunnel status/log re-render snaps the list back to the top
+// while the user is scrolling through a long project list.
 function captureProjectsScroll(): number {
-  const list = root.querySelector<HTMLElement>('.sidebar-projects-section');
+  const list = root.querySelector<HTMLElement>('.picker-list');
   return list ? list.scrollTop : 0;
 }
 
 function restoreProjectsScroll(scrollTop: number) {
-  const list = root.querySelector<HTMLElement>('.sidebar-projects-section');
+  const list = root.querySelector<HTMLElement>('.picker-list');
   if (!list) return;
   const max = list.scrollHeight - list.clientHeight;
   list.scrollTop = Math.max(0, Math.min(scrollTop, max));
@@ -797,6 +808,59 @@ function restoreFormSnapshot(snap: { fields: FormSnapshot; focus: FocusSnapshot 
 // would show the old path again — and Save reads the DOM, silently losing
 // the change. Those renders keep every other form's drafts but drop the
 // project-form keys so the form shows the new state values.
+function navIcon(tab: 'overview' | 'terminal' | 'logs' | 'settings' | 'about'): string {
+  const attrs = 'width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+  if (tab === 'overview') {
+    return `<svg ${attrs}><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></svg>`;
+  }
+  if (tab === 'terminal') {
+    return `<svg ${attrs}><polyline points="5 17 10 11 5 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`;
+  }
+  if (tab === 'logs') {
+    return `<svg ${attrs}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>`;
+  }
+  if (tab === 'settings') {
+    return `<svg ${attrs}><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>`;
+  }
+  return `<svg ${attrs}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+}
+
+function navItemMarkup(
+  tab: 'overview' | 'terminal' | 'logs' | 'settings' | 'about',
+  label: string,
+  hint: string,
+  count?: number,
+): string {
+  return `
+    <button type="button" class="nav-item ${state.activeTab === tab ? 'active' : ''}" data-action="tab-${tab}" title="${escapeHtml(hint)}">
+      ${navIcon(tab)}
+      <span class="nav-item-label">${escapeHtml(label)}</span>
+      ${typeof count === 'number' ? `<span class="nav-count">${count}</span>` : ''}
+    </button>
+  `;
+}
+
+function pageHeadMarkup(opts: { eyebrow: string; title: string; desc?: string; chips?: string; actions?: string }): string {
+  const side = opts.chips || opts.actions
+    ? `
+      <div class="page-head-side">
+        ${opts.chips ? `<div class="page-head-chips">${opts.chips}</div>` : ''}
+        ${opts.actions ? `<div class="page-head-actions">${opts.actions}</div>` : ''}
+      </div>
+    `
+    : '';
+  return `
+    <header class="page-head">
+      <div class="page-head-main">
+        <span class="eyebrow">${escapeHtml(opts.eyebrow)}</span>
+        <h1>${escapeHtml(opts.title)}</h1>
+        ${opts.desc ? `<p class="page-head-desc">${escapeHtml(opts.desc)}</p>` : ''}
+      </div>
+      ${side}
+    </header>
+  `;
+}
+
 function render(options: { refreshProjectForm?: boolean } = {}) {
   const formSnap = captureFormSnapshot();
 
@@ -904,6 +968,496 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
     : !hasProjects
       ? t('createProjectFirst')
       : '';
+  const busyChip = state.busy ? `<span class="busy-indicator">${escapeHtml(state.busy)}</span>` : '';
+
+  // Shared chunks used by more than one view.
+  const bannersHtml = `
+    ${!shareToolReady ? `
+      <section class="install-banner" data-action="tab-settings">
+        <div class="install-banner-copy">
+          <span class="install-banner-label">${t('requiredSetup')}</span>
+          <strong>${t('installCloudflaredFirst')}</strong>
+          <p>${t('tunnelBannerDesc')}</p>
+          <span class="install-banner-path">${t('expectedPath')}: ${escapeHtml(installBannerPath)}</span>
+        </div>
+        <div class="install-banner-action">
+          <button type="button" class="danger-button" data-action="tab-settings">${t('openSettings')}</button>
+        </div>
+      </section>
+    ` : ''}
+    ${updateBanner(appState)}
+  `;
+
+  const editorPanelHtml = state.editorOpen
+    ? `
+      <section class="panel editor-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">${state.editorMode === 'create' ? t('newProject') : t('editProject')}</p>
+            <h2>${escapeHtml(state.editorProject.displayName || t('projectPreset'))}</h2>
+          </div>
+          <button type="button" class="secondary" data-action="close-editor">${t('closeEditor')}</button>
+        </div>
+        <form id="project-form" class="form-grid editor-grid">
+          <input type="hidden" name="id" value="${escapeHtml(state.editorProject.id)}" />
+          <label class="wide">${t('displayName')}<input name="displayName" value="${escapeHtml(state.editorProject.displayName)}" /></label>
+          <label class="wide">
+            ${state.editorProject.shareMode === 'quick' ? t('projectFolder') : t('projectFolderOptional')}
+            <div class="folder-picker">
+              <input
+                name="projectPath"
+                value="${escapeHtml(state.editorProject.projectPath)}"
+                placeholder="${state.editorProject.shareMode === 'quick' ? 'D:\\code\\hr-system' : 'D:\\code\\site'}"
+              />
+              <button type="button" class="secondary browse-button" data-action="browse-project-folder">${t('browse')}</button>
+            </div>
+          </label>
+          <label>
+            ${t('projectType')}
+            <select name="shareMode">
+              <option value="auto" ${state.editorProject.shareMode === 'auto' ? 'selected' : ''}>${t('autoDetectProject')}</option>
+              <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>${t('localHostProjectOption')}</option>
+              ${hasDomain ? `<option value="stable" ${state.editorProject.shareMode === 'stable' ? 'selected' : ''}>${t('fixedPublicUrlOption')}</option>
+              <option value="random-domain" ${state.editorProject.shareMode === 'random-domain' ? 'selected' : ''}>${t('randomPublicUrlOption')}</option>` : ''}
+              <option value="host-html" ${state.editorProject.shareMode === 'host-html' ? 'selected' : ''}>${t('htmlProjectOption')}</option>
+            </select>
+          </label>
+          ${
+            hasDomain && (state.editorProject.shareMode === 'stable' || state.editorProject.shareMode === 'random-domain')
+              ? `
+              <label>${t('urlType')}
+                <select name="urlType" disabled>
+                  <option>${state.editorProject.shareMode === 'stable' ? t('fixedPublicUrl') : t('randomPublicUrl')}</option>
+                </select>
+              </label>
+              ${
+                state.editorProject.shareMode === 'stable'
+                  ? `<label>${t('subdomain')}<input name="subdomain" value="${escapeHtml(state.editorProject.subdomain)}" placeholder="${t('subdomainPlaceholder')}" required /></label>`
+                  : `<label>${t('subdomain')}<input name="subdomain" value="${escapeHtml(state.editorProject.subdomain)}" placeholder="${t('subdomainPlaceholder')}" /></label>`
+              }
+              <p class="hint wide">${escapeHtml(state.editorProject.shareMode === 'stable' ? t('fixedPublicUrlHint') : t('randomPublicUrlHint'))} ${t('defaultDomainHint')}</p>
+              <p class="hint wide">${t('localHostTestHint')}</p>
+              `
+              : ''
+          }
+          ${
+            state.editorProject.shareMode === 'quick' ||
+            state.editorProject.shareMode === 'auto' ||
+            state.editorProject.shareMode === 'stable' ||
+            state.editorProject.shareMode === 'random-domain'
+              ? `<label>${state.editorProject.shareMode === 'auto' ? t('localHostOptional') : t('localHostRequired')}<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="app.test" /></label>`
+              : ''
+          }
+          ${
+            state.editorProject.shareMode === 'auto' || state.editorProject.shareMode === 'host-html'
+              ? `<label>${t('localUrl')}<input name="localURL" value="${escapeHtml(state.editorProject.localURL)}" placeholder="http://127.0.0.1:5500" /></label>`
+              : ''
+          }
+          ${
+            state.editorProject.shareMode === 'quick' ||
+            state.editorProject.shareMode === 'auto' ||
+            state.editorProject.shareMode === 'stable' ||
+            state.editorProject.shareMode === 'random-domain'
+              ? `<label>${t('originUrl')}<input name="originURL" value="${escapeHtml(state.editorProject.originURL)}" placeholder="http://127.0.0.1:80" /></label>`
+              : ''
+          }
+          ${
+            state.editorProject.shareMode === 'auto'
+              ? `<label class="wide">${t('startCommand')}<input name="startCommand" value="${escapeHtml(state.editorProject.startCommand)}" placeholder="npm run dev -- --port 4173" /></label>`
+              : ''
+          }
+           ${
+             state.editorProject.shareMode === 'host-html'
+               ? `
+                <div class="field-hint hint-info">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                   <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+                   <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                 </svg>
+                 <span>${t('hintHtml')}</span>
+                </div>
+                `
+              : state.editorProject.shareMode === 'auto'
+                ? `
+                <div class="field-hint hint-info">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                   <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+                   <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                 </svg>
+                 <span>${t('hintAuto')}</span>
+                </div>
+                `
+               : `
+                <div class="field-hint hint-success">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                   <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
+                   <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                 </svg>
+                  <span>${t('hintLocalHost')}</span>
+               </div>
+             `
+           }
+          <div class="action-row wide"><button type="submit">${state.editorMode === 'create' ? t('saveProject') : t('updateProject')}</button></div>
+        </form>
+      </section>
+    `
+    : '';
+
+  // The project list lives in a modal instead of a permanent column, so the
+  // selected project's details get the full width. Rendered at the end of the
+  // shell with position:fixed so it is never clipped by a scroll container.
+  const projectPickerHtml = state.projectPickerOpen
+    ? `
+      <div class="modal-layer">
+        <div class="modal-backdrop" data-action="close-project-picker"></div>
+        <div class="modal project-picker" role="dialog" aria-modal="true" aria-label="${escapeHtml(t('projects'))}">
+          <div class="modal-head">
+            <h2>${t('projects')}<span class="sidebar-count">${appState.settings.projects.length}</span></h2>
+            <button type="button" class="secondary icon-only" data-action="close-project-picker" aria-label="${escapeHtml(t('close'))}" title="${escapeHtml(t('close'))}">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+          </div>
+          <input id="project-search" class="picker-search" type="search" value="${escapeHtml(state.projectSearch)}" placeholder="${t('searchProjects')}" aria-label="${t('searchProjects')}" autocomplete="off" />
+          <div class="project-list picker-list">${projectRows(appState)}</div>
+          <div class="modal-foot">
+            <button type="button" class="secondary" data-action="new-project">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              ${t('newProject')}
+            </button>
+          </div>
+        </div>
+      </div>
+    `
+    : '';
+
+  const overviewActions = `
+    <button type="button" class="secondary picker-trigger" data-action="open-project-picker" aria-haspopup="dialog" title="${escapeHtml(project ? project.displayName : t('projects'))}">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+      ${t('projects')}
+      <svg class="terminal-switch-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+    </button>
+    ${
+      appState.status.running
+        ? `<button type="button" class="secondary" data-action="stop-tunnel">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12"></rect></svg>
+            ${t('stop')}
+          </button>`
+        : `<button type="button" data-action="start-tunnel" ${!canStartTunnel ? 'disabled' : ''}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            ${escapeHtml(shareAction?.label || t('startTunnel'))}
+          </button>`
+    }
+    <button type="button" class="secondary icon-only" data-action="refresh" title="${t('refreshState')}" aria-label="${t('refreshState')}">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+    </button>
+    ${
+      project
+        ? `
+          <div class="dropdown">
+            <button type="button" class="secondary icon-only" data-action="toggle-project-menu" aria-haspopup="true" aria-expanded="${state.projectMenuOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('manage'))}" title="${escapeHtml(t('manage'))}">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></svg>
+            </button>
+            ${
+              state.projectMenuOpen
+                ? `
+                  <div class="dropdown-menu">
+                    <button type="button" class="dropdown-item" data-action="open-project-folder" ${projectFolderPath ? '' : 'disabled'}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                      </svg>
+                      <span>${t('openFolder')}</span>
+                    </button>
+                    <button type="button" class="dropdown-item" data-action="edit-project">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <path d="M11.333 2.667a.943.943 0 0 1 1.333 1.333l-6.4 6.4L3.333 11.333l.933-2.933 6.4-5.733Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      <span>${t('editProject')}</span>
+                    </button>
+                    <button type="button" class="dropdown-item danger-item" data-action="delete-project">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <path d="M2.667 4h10.666M6 2.667h4M5.333 6v5.333M8 6v5.333M10.667 6v5.333M4.667 4l.4 8A1.333 1.333 0 0 0 6.4 13.333h3.2A1.333 1.333 0 0 0 10.933 12l.4-8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      <span>${t('deleteProject')}</span>
+                    </button>
+                  </div>
+                `
+                : ''
+            }
+          </div>
+        `
+        : ''
+    }
+  `;
+
+  const overviewBody = project
+    ? `
+      <article class="panel selected-panel">
+        <div class="overview-tabs" role="tablist" aria-label="${escapeHtml(t('projectView'))}">
+          <button type="button" role="tab" aria-selected="${state.overviewTab === 'project' ? 'true' : 'false'}"
+            class="overview-tab ${state.overviewTab === 'project' ? 'active' : ''}" data-action="overview-tab" data-id="project">
+            ${t('projectInfo')}
+          </button>
+          <button type="button" role="tab" aria-selected="${state.overviewTab === 'terminal' ? 'true' : 'false'}"
+            class="overview-tab ${state.overviewTab === 'terminal' ? 'active' : ''}" data-action="overview-tab" data-id="terminal">
+            ${t('terminal')}
+            ${state.terminalRunning ? '<span class="status-dot tone-live"></span>' : ''}
+          </button>
+        </div>
+        ${
+          state.overviewTab === 'terminal'
+            ? renderTerminalSection(project)
+            : `
+        <div class="hero-project">
+          <div class="hero-project-main">
+            <div class="hero-target">
+              <span class="summary-label">${t('publicUrl')}</span>
+              <strong>${escapeHtml(projectPrimaryTarget(project))}</strong>
+            </div>
+            ${projectFolderPath ? `<div class="hero-project-path-row">
+              <p class="hero-project-path" title="${escapeHtml(projectFolderPath)}">${escapeHtml(projectFolderPath)}</p>
+              <button type="button" class="secondary inline-copy-button" data-action="open-project-folder" data-id="${escapeHtml(project.id)}" aria-label="${t('openFolder')}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                ${t('openFolder')}
+              </button>
+            </div>` : ''}
+            <div class="inline-url-row">
+              <p>${escapeHtml(projectUrl || t('noPublicUrl'))}</p>
+              ${projectUrl ? `<button type="button" class="secondary inline-copy-button" data-action="open-url" aria-label="${t('open')}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                ${t('open')}
+              </button>` : ''}
+              ${!projectUrl && project.shareMode !== 'stable' ? `<button type="button" class="secondary inline-copy-button" data-action="regenerate-url" aria-label="${t('createPublicUrl')}" ${!shareToolReady ? 'disabled' : ''}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                ${t('refreshUrl')}
+              </button>` : ''}
+            </div>
+            ${
+              hasDomain
+                ? `<div class="action-row" style="margin-top: 12px; flex-wrap: wrap; gap: 8px;">
+                    <button type="button" class="secondary" data-action="share-fixed" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('fixedPublicUrlHint'))}">
+                      ${t('startFixedUrl')}
+                    </button>
+                    <button type="button" class="secondary" data-action="share-random" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('randomPublicUrlHint'))}">
+                      ${t('startRandomUrl')}
+                    </button>
+                  </div>`
+                : ''
+            }
+          </div>
+        </div>
+
+        ${renderUsagePanel(tunnelStatus)}
+        `}
+      </article>
+    `
+    : `
+      <article class="panel empty-state-panel">
+        <p class="empty-copy">${t('createOrSelect')}</p>
+        <button type="button" data-action="new-project">${t('newProject')}</button>
+      </article>
+    `;
+
+  const viewHead = state.activeTab === 'overview'
+    ? pageHeadMarkup({
+        eyebrow: t('projectsEyebrow'),
+        title: project?.displayName || t('projects'),
+        desc: t('projectsDesc'),
+        chips: busyChip,
+        actions: overviewActions,
+      })
+    : state.activeTab === 'logs'
+        ? pageHeadMarkup({
+            eyebrow: t('workspaceSection'),
+            title: t('logs'),
+            desc: t('navLogsHint'),
+            chips: `<span class="chip chip-muted">${escapeHtml(`${appState.status.lastLogs.length} ${t('entries')}`)}</span>${busyChip}`,
+          })
+        : state.activeTab === 'settings'
+          ? pageHeadMarkup({
+              eyebrow: t('systemSection'),
+              title: t('settings'),
+              desc: t('navSettingsHint'),
+              chips: busyChip,
+            })
+          : pageHeadMarkup({
+              eyebrow: t('systemSection'),
+              title: t('about'),
+              desc: t('navAboutHint'),
+              chips: busyChip,
+            });
+
+  const viewBody = state.activeTab === 'overview'
+    ? overviewBody
+    : state.activeTab === 'settings'
+      ? `
+        <article class="panel compact-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">${t('setup')}</p>
+              <h2>${t('shareToolSetup')}</h2>
+            </div>
+          </div>
+          <div class="metric-grid">
+            <div class="metric-card metric-card-split">
+              <div class="metric-card-copy">
+                <span class="summary-label">${t('shareTool')}</span>
+                <strong>${escapeHtml(shareToolStatusLabel)} <span class="pill ${shareToolStatusBadgeClass}">${escapeHtml(shareToolStatusLabel)}</span></strong>
+                <p>${escapeHtml(shareToolStatusMessage)}</p>
+              </div>
+              <div class="action-row">
+                ${
+                  shareToolReady
+                    ? `<button type="button" class="secondary" data-action="ensure-cloudflared">${t('recheckCloudflared')}</button>`
+                    : `
+                      <button type="button" data-action="install-cloudflared">${t('installCloudflared')}</button>
+                      <button type="button" class="secondary" data-action="ensure-cloudflared">${t('checkSetup')}</button>
+                    `
+                }
+              </div>
+            </div>
+            <div class="metric-card metric-card-split">
+              <div class="metric-card-copy">
+                <span class="summary-label">${t('setupTunnel')}</span>
+                <strong>${escapeHtml(setupTunnelStatusLabel)} <span class="pill ${setupTunnelStatusBadgeClass}">${escapeHtml(setupTunnelStatusLabel)}</span></strong>
+                <p>${escapeHtml(setupTunnelStatusMessage)}</p>
+              </div>
+              <div class="action-row">
+                <button type="button" class="secondary" disabled>${t('notNeeded')}</button>
+              </div>
+            </div>
+          </div>
+          <div class="metric-grid metric-grid-section">
+            <div class="metric-card metric-card-split">
+              <div class="metric-card-copy">
+                <span class="summary-label">${t('envkitSectionTitle')}</span>
+                <strong>${escapeHtml(envkitHint)} <span class="pill ${localStackDetected ? 'pill-success' : 'pill-outline'}">${localStackDetected ? t('installed') : t('notInstalled')}</span></strong>
+                <p>${localStackDetected && localStackPath ? `${t('localStackInstallPath')}: ${escapeHtml(localStackPath)}` : ''}</p>
+                ${envkitOriginHint ? `<p>${escapeHtml(envkitOriginHint)}</p>` : ''}
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel compact-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">${t('defaults')}</p>
+              <h2>${t('appSettings')}</h2>
+            </div>
+          </div>
+          <form id="settings-form" class="form-grid">
+            <label>${t('cloudflaredPath')}<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="${t('leaveBlankDefault')}" /></label>
+            <label>${t('localServiceUrl')}<input name="defaultServiceURL" value="${escapeHtml(appState.settings.defaultServiceURL)}" /></label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="insecureSkipOriginTls" ${appState.settings.insecureSkipOriginTls ? 'checked' : ''} />
+              <span>
+                <strong>${t('insecureSkipOriginTls')}</strong>
+                <small class="hint">${t('insecureSkipOriginTlsHint')}</small>
+              </span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="devServerFallback" ${appState.settings.devServerFallback !== false ? 'checked' : ''} />
+              <span>
+                <strong>${t('devServerFallback')}</strong>
+                <small class="hint">${t('devServerFallbackHint')}</small>
+              </span>
+            </label>
+            <div class="action-row wide"><button type="submit">${t('save')}</button></div>
+          </form>
+        </article>
+
+        <article class="panel compact-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">${t('stackSectionTitle')}</p>
+              <h2>${t('stackSectionSubtitle')}</h2>
+            </div>
+            <div class="action-row">
+              <button type="button" class="secondary" data-action="stack-start-all">${t('stackStartAll')}</button>
+              <button type="button" class="secondary" data-action="stack-stop-all">${t('stackStopAll')}</button>
+              <button type="button" class="secondary" data-action="stack-detect" title="${t('stackDetectTitle')}">${t('stackDetect')}</button>
+              <button type="button" class="secondary" data-action="nginx-install" title="${t('nginxInstall')}">${t('nginxInstall')}</button>
+              <button type="button" class="secondary" data-action="mariadb-install" title="${t('mariaDBInstall')}">${t('mariaDBInstall')}</button>
+            </div>
+          </div>
+          <form id="stack-form" class="form-grid">
+            <label>${t('stackNginxPath')}<input name="nginxBinaryPath" value="${escapeHtml(state.stackDraft.nginxBinaryPath)}" placeholder="C:\\nginx\\nginx.exe" /></label>
+            <label>${t('stackPhpPath')}<input name="phpCgiBinaryPath" value="${escapeHtml(state.stackDraft.phpCgiBinaryPath)}" placeholder="C:\\php\\php-cgi.exe" /></label>
+            <label>${t('stackMysqlPath')}<input name="mysqldBinaryPath" value="${escapeHtml(state.stackDraft.mysqldBinaryPath)}" placeholder="C:\\mysql\\bin\\mysqld.exe" /></label>
+            <label>${t('stackNginxPort')}<input type="number" min="1" max="65535" name="nginxPort" value="${escapeHtml(String(state.stackDraft.nginxPort ?? 8090))}" /></label>
+            <label>${t('stackPhpPort')}<input type="number" min="1" max="65535" name="phpPort" value="${escapeHtml(String(state.stackDraft.phpPort ?? 9000))}" /></label>
+            <label>${t('stackMysqlPort')}<input type="number" min="1" max="65535" name="mysqlPort" value="${escapeHtml(String(state.stackDraft.mysqlPort ?? 3306))}" /></label>
+            <div class="action-row wide"><button type="submit">${t('stackSave')}</button></div>
+          </form>
+          <div class="stack-status">
+            ${stackStatusTabs()}
+          </div>
+          <div class="panel-header" style="margin-top: 8px;">
+            <div>
+              <p class="eyebrow">${t('phpSectionTitle')}</p>
+              <h2>${t('phpSectionSubtitle')}</h2>
+            </div>
+            <div class="action-row">
+              <select name="phpInstallVersion" class="php-version-select" title="${t('phpVersionPickTitle')}">
+                ${(state.phpVersions?.installable ?? []).map((v) => `<option value="${escapeHtml(v)}" ${v === (state.phpConfig?.managedVersion || '') ? 'selected' : ''}>PHP ${escapeHtml(v)}</option>`).join('')}
+              </select>
+              <button type="button" class="secondary" data-action="php-install-version" title="${t('phpVersionInstallTitle')}">${t('phpVersionInstall')}</button>
+              <button type="button" class="secondary" data-action="php-install">${state.phpConfig?.installed ? t('phpReinstall') : t('phpInstall')}</button>
+            </div>
+          </div>
+          ${phpVersionsList()}
+          <p class="hint" style="margin-top: 4px;">${state.phpConfig?.installed ? `${t('phpInstalledAt')}: ${escapeHtml(state.phpConfig.installDir)} (${escapeHtml(state.phpConfig.version || '?')})` : t('phpNotInstalledHint')}</p>
+          ${state.phpConfig?.installed ? `
+          <form id="php-config-form" class="form-grid">
+            <label>${t('phpMemoryLimit')}<input name="memoryLimit" value="${escapeHtml(state.phpConfig.memoryLimit || '256M')}" placeholder="256M" /></label>
+            <label>${t('phpUploadMax')}<input name="uploadMax" value="${escapeHtml(state.phpConfig.uploadMax || '64M')}" placeholder="64M" /></label>
+            <label>${t('phpPostMax')}<input name="postMax" value="${escapeHtml(state.phpConfig.postMax || '64M')}" placeholder="64M" /></label>
+            <label>${t('phpMaxExecTime')}<input type="number" min="1" max="600" name="maxExecTime" value="${escapeHtml(String(state.phpConfig.maxExecTime || 120))}" /></label>
+            <label class="wide">${t('phpExtraExtensions')}<input name="extraExts" value="${escapeHtml((state.phpConfig.extraExts || []).join(', '))}" placeholder="soap, xsl, exif" /></label>
+            <div class="action-row wide"><button type="submit">${t('phpSaveConfig')}</button></div>
+          </form>
+          <p class="hint">${t('phpIniPath')}: ${escapeHtml(state.phpConfig.iniPath)}</p>
+          ` : ''}
+          <p class="hint">${t('stackHint')}</p>
+        </article>
+      `
+      : state.activeTab === 'logs'
+        ? `
+          <section class="panel logs-panel">
+            <div class="log-stream">${logRows(appState.status.lastLogs)}</div>
+          </section>
+        `
+        : `
+            <article class="panel compact-panel">
+              <div class="metric-grid">
+                <div class="metric-card">
+                   <span class="summary-label">${t('version')}</span>
+                   <strong>${escapeHtml(displayVersionLabel(appState.productVersion))}</strong>
+                </div>
+                <div class="metric-card">
+                   <span class="summary-label">${t('platform')}</span>
+                   <strong>Windows</strong>
+                </div>
+              </div>
+              <div class="metric-grid" style="margin-top: 20px;">
+                <div class="metric-card">
+                  <span class="summary-label">${t('updates')}</span>
+                  <strong>${escapeHtml(appState.update.available ? `${displayVersionLabel(appState.update.latestVersion)} ${t('available')}` : appState.update.checked ? t('upToDate') : t('checkingBackground'))}</strong>
+                  <p style="margin-top: 10px; color: var(--text-secondary);">${escapeHtml(appState.update.message || t('updateHint'))}</p>
+                  <div class="action-row" style="margin-top: 14px;">
+                    <button type="button" class="secondary" data-action="check-updates">${t('checkNow')}</button>
+                    <button type="button" ${appState.update.available ? '' : 'disabled'} data-action="install-latest-update">${t('updateNow')}</button>
+                    <button type="button" ${appState.update.releaseUrl ? '' : 'disabled'} data-action="open-latest-release">${t('openRelease')}</button>
+                  </div>
+                </div>
+              </div>
+              <div style="color: var(--text-secondary); line-height: 1.6;">
+                <p>${t('aboutDescription')}</p>
+                <p style="margin-top: 16px;">${t('aboutCreator')}</p>
+                <p style="margin-top: 16px; color: var(--text-primary); font-weight: 500;">${t('aboutLicense')}</p>
+              </div>
+            </article>
+          `;
 
   // Capture scroll position before we blow away the DOM. We only restore
   // when the tab did not change — explicit tab switches should land at the
@@ -914,552 +1468,95 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
   lastRenderedTab = state.activeTab;
 
   root.innerHTML = `
-    <main class="shell">
-      <aside class="sidebar">
-        <div class="sidebar-header">
-          <div class="logo">
-            <div class="logo-main">
-              <img src="./logo.png?v=3" alt="App logo" />
-              <div class="logo-text">
-                <h1>Exposely</h1>
-                <div class="status-indicator tone-${statusTone(tunnelStatus)}">
-                  <span class="status-dot"></span>
-                  <span>${escapeHtml(tunnelStatus.running ? t('running') : t('stopped'))}</span>
-                </div>
-              </div>
-            </div>
+    <div class="app ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}">
+      <header class="topbar">
+        <div class="brand">
+          <button type="button" class="brand-mark" data-action="toggle-sidebar"
+            aria-expanded="${state.sidebarCollapsed ? 'false' : 'true'}"
+            aria-label="${escapeHtml(state.sidebarCollapsed ? t('showSidebar') : t('hideSidebar'))}"
+            title="${escapeHtml(state.sidebarCollapsed ? t('showSidebar') : t('hideSidebar'))}">
+            <svg class="brand-logo" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="exposelyLogoGrad" x1="6" y1="5" x2="26" y2="27" gradientUnits="userSpaceOnUse">
+                  <stop class="logo-stop-a" offset="0"></stop>
+                  <stop class="logo-stop-b" offset="1"></stop>
+                </linearGradient>
+              </defs>
+              <path d="M6 27V15c0-6.1 4.5-10 10-10s10 3.9 10 10v12" stroke="url(#exposelyLogoGrad)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></path>
+              <path d="M11.5 27V16.2c0-3.8 2-6 4.5-6s4.5 2.2 4.5 6V27" stroke="url(#exposelyLogoGrad)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"></path>
+              <ellipse cx="16" cy="16" rx="5.4" ry="2.1" transform="rotate(-18 16 16)" stroke="url(#exposelyLogoGrad)" stroke-width="1.2" opacity="0.8"></ellipse>
+              <circle class="logo-core" cx="16" cy="16" r="2.1" fill="url(#exposelyLogoGrad)"></circle>
+            </svg>
+            <span class="brand-mark-toggle" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+            </span>
+          </button>
+          <div class="brand-text">
+            <h1>Exposely</h1>
+            <span class="brand-tag">${t('appTagline')}</span>
           </div>
         </div>
 
-        <div class="sidebar-section sidebar-create-section">
-          <div class="section-header">
-            <h3>${t('projects')}</h3>
-            <button type="button" class="add-button" data-action="new-project" title="${t('newProject')}">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <div class="sidebar-section sidebar-projects-section">
-          <div class="project-search">
-            <input id="project-search" type="search" value="${escapeHtml(state.projectSearch)}" placeholder="${t('searchProjects')}" aria-label="${t('searchProjects')}" autocomplete="off" />
-          </div>
-          <div class="project-list">${projectRows(appState)}</div>
-        </div>
-
-      </aside>
-
-      <section class="main-content">
-        <div class="app-navbar">
-          <nav class="top-nav" aria-label="Primary">
-            <button type="button" class="top-nav-item ${state.activeTab === 'overview' ? 'active' : ''}" data-action="tab-overview">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M10 2L2 7L10 12L18 7L10 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M2 13L10 18L18 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <span>${t('overview')}</span>
-            </button>
-            <button type="button" class="top-nav-item ${state.activeTab === 'settings' ? 'active' : ''}" data-action="tab-settings">
-              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="2"/>
-                <path d="M10 2V4M10 16V18M18 10H16M4 10H2M15.66 4.34L14.24 5.76M5.76 14.24L4.34 15.66M15.66 15.66L14.24 14.24M5.76 5.76L4.34 4.34" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-              </svg>
-              <span>${t('settings')}</span>
-            </button>
-            <button type="button" class="top-nav-item ${state.activeTab === 'about' ? 'active' : ''}" data-action="tab-about">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="16" x2="12" y2="12"></line>
-                <line x1="12" y1="8" x2="12.01" y2="8"></line>
-              </svg>
-              <span>${t('about')}</span>
-            </button>
-            <button type="button" class="top-nav-item ${state.activeTab === 'logs' ? 'active' : ''}" data-action="tab-logs">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                <polyline points="14 2 14 8 20 8"></polyline>
-                <line x1="8" y1="13" x2="16" y2="13"></line>
-                <line x1="8" y1="17" x2="16" y2="17"></line>
-              </svg>
-              <span>${t('logs')}</span>
-            </button>
-            <button type="button" class="top-nav-item ${state.activeTab === 'terminal' ? 'active' : ''}" data-action="tab-terminal">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <polyline points="4 17 10 11 4 5"></polyline>
-                <line x1="12" y1="19" x2="20" y2="19"></line>
-              </svg>
-              <span>${t('terminal')}</span>
-            </button>
-          </nav>
-          <div class="navbar-actions">
-            <button type="button" class="stack-toggle ${stackRunningCount > 0 ? 'stack-toggle-on' : ''}" data-action="stack-toggle-all" title="${stackRunningCount > 0 ? t('stackStopAll') : t('stackStartAll')}" ${!stackConfigured ? 'disabled' : ''}>
+        <div class="topbar-actions">
+          <div class="dropdown">
+            <button type="button" class="stack-toggle ${stackRunningCount > 0 ? 'stack-toggle-on' : ''}" data-action="toggle-stack-menu" aria-haspopup="true" aria-expanded="${state.stackMenuOpen ? 'true' : 'false'}" title="${t('stackMenuTitle')}" ${!stackConfigured ? 'disabled' : ''}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"></path><circle cx="9" cy="6" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="15" cy="12" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="7" cy="18" r="1.6" fill="currentColor" stroke="none"></circle></svg>
               <span>Stack</span>
               <span class="stack-toggle-badge">${stackRunningCount}/${stackTotalCount}</span>
             </button>
-            <button type="button" class="stack-toggle" data-action="open-database-manager" title="${t('dbManagerTitle')}" ${!stackConfigured ? 'disabled' : ''}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
-              <span>${t('dbManager')}</span>
-            </button>
-            <button type="button" class="icon-switch" data-action="toggle-theme" aria-label="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}" title="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}">
-              ${themeIcon(nextTheme())}
-            </button>
-            <button type="button" class="icon-switch lang-switch" data-action="toggle-lang" aria-label="${nextLanguage() === 'km' ? t('switchToKhmer') : t('switchToEnglish')}" title="${nextLanguage() === 'km' ? t('switchToKhmer') : t('switchToEnglish')}">
-              <span aria-hidden="true">${languageFlagIcon(nextLanguage())}</span>
-            </button>
+            ${state.stackMenuOpen ? stackMenuHtml() : ''}
           </div>
+          <button type="button" class="stack-toggle" data-action="open-database-manager" title="${t('dbManagerTitle')}" ${!stackConfigured ? 'disabled' : ''}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+            <span>${t('dbManager')}</span>
+          </button>
+          <button type="button" class="icon-switch" data-action="toggle-theme" aria-label="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}" title="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}">
+            ${themeIcon(nextTheme())}
+          </button>
+          <button type="button" class="icon-switch lang-switch" data-action="toggle-lang" aria-label="${nextLanguage() === 'km' ? t('switchToKhmer') : t('switchToEnglish')}" title="${nextLanguage() === 'km' ? t('switchToKhmer') : t('switchToEnglish')}">
+            <span aria-hidden="true">${languageCode(nextLanguage())}</span>
+          </button>
         </div>
+      </header>
 
-        ${!shareToolReady ? `
-          <section class="install-banner" data-action="tab-settings">
-            <div class="install-banner-copy">
-              <span class="install-banner-label">${t('requiredSetup')}</span>
-              <strong>${t('installCloudflaredFirst')}</strong>
-              <p>${t('tunnelBannerDesc')}</p>
-              <span class="install-banner-path">${t('expectedPath')}: ${escapeHtml(installBannerPath)}</span>
+      <div class="app-body">
+        <aside class="sidebar">
+          <nav class="sidebar-nav" aria-label="Primary">
+            <div class="sidebar-label">${t('workspaceSection')}</div>
+            ${navItemMarkup('overview', t('projects'), t('navProjectsHint'), appState.settings.projects.length)}
+            ${navItemMarkup('logs', t('logs'), t('navLogsHint'))}
+            <div class="sidebar-label">${t('systemSection')}</div>
+            ${navItemMarkup('settings', t('settings'), t('navSettingsHint'))}
+            ${navItemMarkup('about', t('about'), t('navAboutHint'))}
+          </nav>
+
+          <div class="sidebar-spacer"></div>
+
+          <button type="button" class="status-card" data-action="tab-settings" title="${t('navSettingsHint')}">
+            <div class="status-card-head">
+              <span class="status-dot ${tunnelStatus.running ? 'tone-live' : 'tone-idle'}"></span>
+              <span class="status-card-title">${t('tunnelLabel')} · ${tunnelStatus.running ? t('running') : t('stopped')}</span>
+              <svg class="status-card-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
             </div>
-            <div class="install-banner-action">
-              <button type="button" class="danger-button" data-action="tab-settings">${t('openSettings')}</button>
+            <div class="status-card-sub">${t('stackSectionTitle')} ${stackRunningCount}/${stackTotalCount}</div>
+            <div class="status-card-foot">
+              <span>${shareToolReady ? t('installed') : t('installRequired')}</span>
+              <span class="status-card-v">${escapeHtml(displayVersionLabel(appState.productVersion))}</span>
             </div>
-          </section>
-        ` : ''}
-        ${updateBanner(appState)}
+          </button>
+        </aside>
 
-        <header class="content-header">
-          <div class="header-info">
-            <div class="header-title-row">
-              <h2>${state.activeTab === 'overview' ? t('projects') : state.activeTab === 'settings' ? t('settings') : state.activeTab === 'logs' ? t('logs') : state.activeTab === 'terminal' ? t('terminal') : t('about')}</h2>
-              <span class="pill ${tunnelStatus.running ? 'pill-success' : 'pill-outline'}">${tunnelStatus.running ? t('running') : t('stopped')}</span>
-            </div>
-            ${state.busy ? `<p class="busy-indicator">${escapeHtml(state.busy)}</p>` : ''}
-          </div>
-          <div class="header-actions">
-            <button type="button" data-action="start-tunnel" ${state.appState?.status.running || !canStartTunnel ? 'disabled' : ''}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-              ${escapeHtml(shareAction?.label || t('startTunnel'))}
-            </button>
-            <button type="button" class="secondary" data-action="stop-tunnel">
-               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12"></rect></svg>
-               ${t('stop')}
-            </button>
-            <button type="button" class="secondary" data-action="refresh" title="${t('refreshState')}">
-               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-            </button>
-          </div>
-        </header>
-
-        ${headerHint ? `<p class="header-hint">${escapeHtml(headerHint)}</p>` : ''}
-
-        ${state.notice ? `<section class="toast toast-${state.notice.tone}">${escapeHtml(state.notice.message)}</section>` : ''}
-
-          ${
-            state.editorOpen
-              ? `
-              <section class="panel editor-panel">
-                <div class="panel-header">
-                  <div>
-                    <p class="eyebrow">${state.editorMode === 'create' ? t('newProject') : t('editProject')}</p>
-                    <h2>${escapeHtml(state.editorProject.displayName || t('projectPreset'))}</h2>
-                  </div>
-                  <button type="button" class="secondary" data-action="close-editor">${t('closeEditor')}</button>
-                </div>
-                <form id="project-form" class="form-grid editor-grid">
-                  <input type="hidden" name="id" value="${escapeHtml(state.editorProject.id)}" />
-                  <label class="wide">${t('displayName')}<input name="displayName" value="${escapeHtml(state.editorProject.displayName)}" /></label>
-                  <label class="wide">
-                    ${state.editorProject.shareMode === 'quick' ? t('projectFolder') : t('projectFolderOptional')}
-                    <div class="folder-picker">
-                      <input
-                        name="projectPath"
-                        value="${escapeHtml(state.editorProject.projectPath)}"
-                        placeholder="${state.editorProject.shareMode === 'quick' ? 'D:\\code\\hr-system' : 'D:\\code\\site'}"
-                      />
-                      <button type="button" class="secondary browse-button" data-action="browse-project-folder">${t('browse')}</button>
-                    </div>
-                  </label>
-                  <label>
-                    ${t('projectType')}
-                    <select name="shareMode">
-                      <option value="auto" ${state.editorProject.shareMode === 'auto' ? 'selected' : ''}>${t('autoDetectProject')}</option>
-                      <option value="quick" ${state.editorProject.shareMode === 'quick' ? 'selected' : ''}>${t('localHostProjectOption')}</option>
-                      ${hasDomain ? `<option value="stable" ${state.editorProject.shareMode === 'stable' ? 'selected' : ''}>${t('fixedPublicUrlOption')}</option>
-                      <option value="random-domain" ${state.editorProject.shareMode === 'random-domain' ? 'selected' : ''}>${t('randomPublicUrlOption')}</option>` : ''}
-                      <option value="host-html" ${state.editorProject.shareMode === 'host-html' ? 'selected' : ''}>${t('htmlProjectOption')}</option>
-                    </select>
-                  </label>
-                  ${
-                    hasDomain && (state.editorProject.shareMode === 'stable' || state.editorProject.shareMode === 'random-domain')
-                      ? `
-                      <label>${t('urlType')}
-                        <select name="urlType" disabled>
-                          <option>${state.editorProject.shareMode === 'stable' ? t('fixedPublicUrl') : t('randomPublicUrl')}</option>
-                        </select>
-                      </label>
-                      ${
-                        state.editorProject.shareMode === 'stable'
-                          ? `<label>${t('subdomain')}<input name="subdomain" value="${escapeHtml(state.editorProject.subdomain)}" placeholder="${t('subdomainPlaceholder')}" required /></label>`
-                          : `<label>${t('subdomain')}<input name="subdomain" value="${escapeHtml(state.editorProject.subdomain)}" placeholder="${t('subdomainPlaceholder')}" /></label>`
-                      }
-                      <p class="hint wide">${escapeHtml(state.editorProject.shareMode === 'stable' ? t('fixedPublicUrlHint') : t('randomPublicUrlHint'))} ${t('defaultDomainHint')}</p>
-                      <p class="hint wide">${t('localHostTestHint')}</p>
-                      `
-                      : ''
-                  }
-                  ${
-                    state.editorProject.shareMode === 'quick' ||
-                    state.editorProject.shareMode === 'auto' ||
-                    state.editorProject.shareMode === 'stable' ||
-                    state.editorProject.shareMode === 'random-domain'
-                      ? `<label>${state.editorProject.shareMode === 'auto' ? t('localHostOptional') : t('localHostRequired')}<input name="localHost" value="${escapeHtml(state.editorProject.localHost)}" placeholder="app.test" /></label>`
-                      : ''
-                  }
-                  ${
-                    state.editorProject.shareMode === 'auto' || state.editorProject.shareMode === 'host-html'
-                      ? `<label>${t('localUrl')}<input name="localURL" value="${escapeHtml(state.editorProject.localURL)}" placeholder="http://127.0.0.1:5500" /></label>`
-                      : ''
-                  }
-                  ${
-                    state.editorProject.shareMode === 'quick' ||
-                    state.editorProject.shareMode === 'auto' ||
-                    state.editorProject.shareMode === 'stable' ||
-                    state.editorProject.shareMode === 'random-domain'
-                      ? `<label>${t('originUrl')}<input name="originURL" value="${escapeHtml(state.editorProject.originURL)}" placeholder="http://127.0.0.1:80" /></label>`
-                      : ''
-                  }
-                  ${
-                    state.editorProject.shareMode === 'auto'
-                      ? `<label class="wide">${t('startCommand')}<input name="startCommand" value="${escapeHtml(state.editorProject.startCommand)}" placeholder="npm run dev -- --port 4173" /></label>`
-                      : ''
-                  }
-                   ${
-                     state.editorProject.shareMode === 'host-html'
-                       ? `
-                        <div class="field-hint hint-info">
-                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                           <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
-                           <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                         </svg>
-                         <span>${t('hintHtml')}</span>
-                        </div>
-                        `
-                      : state.editorProject.shareMode === 'auto'
-                        ? `
-                        <div class="field-hint hint-info">
-                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                           <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
-                           <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                         </svg>
-                         <span>${t('hintAuto')}</span>
-                        </div>
-                        `
-                       : `
-                        <div class="field-hint hint-success">
-                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                           <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
-                           <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                         </svg>
-                          <span>${t('hintLocalHost')}</span>
-                       </div>
-                     `
-                   }
-                  <div class="action-row wide"><button type="submit">${state.editorMode === 'create' ? t('saveProject') : t('updateProject')}</button></div>
-                </form>
-              </section>
-            `
-              : ''
-          }
-
-          ${
-            state.activeTab === 'overview'
-              ? `
-                <article class="panel selected-panel">
-                  <div class="panel-header">
-                    <div>
-                      <h2>${escapeHtml(project?.displayName || t('noProject'))}</h2>
-                    </div>
-                    <div class="selected-header-actions">
-                      ${
-                        project
-                          ? `
-                            <div class="dropdown">
-                              <button type="button" class="secondary menu-button" data-action="toggle-project-menu">${t('manage')}</button>
-                              ${
-                                state.projectMenuOpen
-                                  ? `
-                                    <div class="dropdown-menu">
-                                      <button type="button" class="dropdown-item" data-action="open-project-folder" ${projectFolderPath ? '' : 'disabled'}>
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-                                        </svg>
-                                        <span>${t('openFolder')}</span>
-                                      </button>
-                                      <button type="button" class="dropdown-item" data-action="edit-project">
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                                          <path d="M11.333 2.667a.943.943 0 0 1 1.333 1.333l-6.4 6.4L3.333 11.333l.933-2.933 6.4-5.733Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                        <span>${t('editProject')}</span>
-                                      </button>
-                                      <button type="button" class="dropdown-item danger-item" data-action="delete-project">
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                                          <path d="M2.667 4h10.666M6 2.667h4M5.333 6v5.333M8 6v5.333M10.667 6v5.333M4.667 4l.4 8A1.333 1.333 0 0 0 6.4 13.333h3.2A1.333 1.333 0 0 0 10.933 12l.4-8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                        <span>${t('deleteProject')}</span>
-                                      </button>
-                                    </div>
-                                  `
-                                  : ''
-                              }
-                            </div>
-                          `
-                          : ''
-                      }
-                    </div>
-                  </div>
-
-                  ${
-                    project
-                      ? `
-                        <div class="hero-project">
-                          <div class="hero-project-main">
-                            <strong>${escapeHtml(projectPrimaryTarget(project))}</strong>
-                            ${projectFolderPath ? `<div class="hero-project-path-row">
-                              <p class="hero-project-path" title="${escapeHtml(projectFolderPath)}">${escapeHtml(projectFolderPath)}</p>
-                              <button type="button" class="secondary inline-copy-button" data-action="open-project-folder" data-id="${escapeHtml(project.id)}" aria-label="${t('openFolder')}">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-                                ${t('openFolder')}
-                              </button>
-                            </div>` : ''}
-                            <div class="inline-url-row">
-                              <p>${escapeHtml(projectUrl || t('noPublicUrl'))}</p>
-                              ${projectUrl ? `<button type="button" class="secondary inline-copy-button" data-action="open-url" aria-label="${t('open')}">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
-                                ${t('open')}
-                              </button>` : ''}
-                              ${!projectUrl && project.shareMode !== 'stable' ? `<button type="button" class="secondary inline-copy-button" data-action="regenerate-url" aria-label="${t('createPublicUrl')}" ${!shareToolReady ? 'disabled' : ''}>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                                ${t('refreshUrl')}
-                              </button>` : ''}
-                            </div>
-                            <div class="action-row" style="margin-top: 12px; flex-wrap: wrap; gap: 8px;">
-                              ${
-                                hasDomain
-                                  ? `
-                              <button type="button" class="secondary" data-action="share-fixed" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('fixedPublicUrlHint'))}">
-                                ${t('startFixedUrl')}
-                              </button>
-                              <button type="button" class="secondary" data-action="share-random" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('randomPublicUrlHint'))}">
-                                ${t('startRandomUrl')}
-                              </button>
-                                  `
-                                  : ''
-                              }
-                              <button type="button" class="secondary" data-action="share-quick" data-id="${escapeHtml(project.id)}" ${!shareToolReady ? 'disabled' : ''} title="${escapeHtml(t('randomPublicUrlHint'))}">
-                                ${t('createPublicUrl')}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-
-                        ${renderUsagePanel(tunnelStatus)}
-                      `
-                      : `<p class="empty-copy">${t('createOrSelect')}</p>`
-                  }
-                </article>
-              `
-                 : state.activeTab === 'settings'
-                 ? `
-                    <article class="panel compact-panel">
-                      <div class="panel-header">
-                        <div>
-                          <p class="eyebrow">${t('setup')}</p>
-                          <h2>${t('shareToolSetup')}</h2>
-                        </div>
-                      </div>
-                      <div class="metric-grid">
-                        <div class="metric-card metric-card-split">
-                          <div class="metric-card-copy">
-                            <span class="summary-label">${t('shareTool')}</span>
-                            <strong>${escapeHtml(shareToolStatusLabel)} <span class="pill ${shareToolStatusBadgeClass}">${escapeHtml(shareToolStatusLabel)}</span></strong>
-                            <p>${escapeHtml(shareToolStatusMessage)}</p>
-                          </div>
-                          <div class="action-row">
-                            ${
-                              shareToolReady
-                                ? `<button type="button" class="secondary" data-action="ensure-cloudflared">${t('recheckCloudflared')}</button>`
-                                : `
-                                  <button type="button" data-action="install-cloudflared">${t('installCloudflared')}</button>
-                                  <button type="button" class="secondary" data-action="ensure-cloudflared">${t('checkSetup')}</button>
-                                `
-                            }
-                          </div>
-                        </div>
-                        <div class="metric-card metric-card-split">
-                          <div class="metric-card-copy">
-                            <span class="summary-label">${t('setupTunnel')}</span>
-                            <strong>${escapeHtml(setupTunnelStatusLabel)} <span class="pill ${setupTunnelStatusBadgeClass}">${escapeHtml(setupTunnelStatusLabel)}</span></strong>
-                            <p>${escapeHtml(setupTunnelStatusMessage)}</p>
-                          </div>
-                          <div class="action-row">
-                            <button type="button" class="secondary" disabled>${t('notNeeded')}</button>
-                          </div>
-                        </div>
-                      </div>
-                      <div class="metric-grid metric-grid-section">
-                        <div class="metric-card metric-card-split">
-                          <div class="metric-card-copy">
-                            <span class="summary-label">${t('envkitSectionTitle')}</span>
-                            <strong>${escapeHtml(envkitHint)} <span class="pill ${localStackDetected ? 'pill-success' : 'pill-outline'}">${localStackDetected ? t('installed') : t('notInstalled')}</span></strong>
-                            <p>${localStackDetected && localStackPath ? `${t('localStackInstallPath')}: ${escapeHtml(localStackPath)}` : ''}</p>
-                            ${envkitOriginHint ? `<p>${escapeHtml(envkitOriginHint)}</p>` : ''}
-                          </div>
-                        </div>
-                      </div>
-                    </article>
-
-                 <article class="panel compact-panel">
-                    <div class="panel-header">
-                      <div>
-                        <p class="eyebrow">${t('defaults')}</p>
-                        <h2>${t('appSettings')}</h2>
-                      </div>
-                    </div>
-                    <form id="settings-form" class="form-grid">
-                      <label>${t('cloudflaredPath')}<input name="cloudflaredPath" value="${escapeHtml(appState.settings.cloudflaredPath)}" placeholder="${t('leaveBlankDefault')}" /></label>
-                      <label>${t('localServiceUrl')}<input name="defaultServiceURL" value="${escapeHtml(appState.settings.defaultServiceURL)}" /></label>
-                      <label class="checkbox-row">
-                        <input type="checkbox" name="insecureSkipOriginTls" ${appState.settings.insecureSkipOriginTls ? 'checked' : ''} />
-                        <span>
-                          <strong>${t('insecureSkipOriginTls')}</strong>
-                          <small class="hint">${t('insecureSkipOriginTlsHint')}</small>
-                        </span>
-                      </label>
-                      <label class="checkbox-row">
-                        <input type="checkbox" name="devServerFallback" ${appState.settings.devServerFallback !== false ? 'checked' : ''} />
-                        <span>
-                          <strong>${t('devServerFallback')}</strong>
-                          <small class="hint">${t('devServerFallbackHint')}</small>
-                        </span>
-                      </label>
-                      <div class="action-row wide"><button type="submit">${t('save')}</button></div>
-                     </form>
-                   </article>
-
-                   <article class="panel compact-panel">
-                     <div class="panel-header">
-                       <div>
-                         <p class="eyebrow">${t('stackSectionTitle')}</p>
-                         <h2>${t('stackSectionSubtitle')}</h2>
-                       </div>
-                       <div class="action-row">
-                         <button type="button" class="secondary" data-action="stack-start-all">${t('stackStartAll')}</button>
-                         <button type="button" class="secondary" data-action="stack-stop-all">${t('stackStopAll')}</button>
-                         <button type="button" class="secondary" data-action="stack-detect" title="${t('stackDetectTitle')}">${t('stackDetect')}</button>
-                         <button type="button" class="secondary" data-action="nginx-install" title="${t('nginxInstall')}">${t('nginxInstall')}</button>
-                         <button type="button" class="secondary" data-action="mariadb-install" title="${t('mariaDBInstall')}">${t('mariaDBInstall')}</button>
-                       </div>
-                     </div>
-                     <form id="stack-form" class="form-grid">
-                       <label>${t('stackNginxPath')}<input name="nginxBinaryPath" value="${escapeHtml(state.stackDraft.nginxBinaryPath)}" placeholder="C:\\nginx\\nginx.exe" /></label>
-                       <label>${t('stackPhpPath')}<input name="phpCgiBinaryPath" value="${escapeHtml(state.stackDraft.phpCgiBinaryPath)}" placeholder="C:\\php\\php-cgi.exe" /></label>
-                       <label>${t('stackMysqlPath')}<input name="mysqldBinaryPath" value="${escapeHtml(state.stackDraft.mysqldBinaryPath)}" placeholder="C:\\mysql\\bin\\mysqld.exe" /></label>
-                       <label>${t('stackNginxPort')}<input type="number" min="1" max="65535" name="nginxPort" value="${escapeHtml(String(state.stackDraft.nginxPort ?? 8090))}" /></label>
-                       <label>${t('stackPhpPort')}<input type="number" min="1" max="65535" name="phpPort" value="${escapeHtml(String(state.stackDraft.phpPort ?? 9000))}" /></label>
-                       <label>${t('stackMysqlPort')}<input type="number" min="1" max="65535" name="mysqlPort" value="${escapeHtml(String(state.stackDraft.mysqlPort ?? 3306))}" /></label>
-                       <div class="action-row wide"><button type="submit">${t('stackSave')}</button></div>
-                     </form>
-                     <div class="metric-grid metric-grid-section">
-                       ${stackStatusCards()}
-                     </div>
-                     <div class="panel-header" style="margin-top: 8px;">
-                       <div>
-                         <p class="eyebrow">${t('phpSectionTitle')}</p>
-                         <h2>${t('phpSectionSubtitle')}</h2>
-                       </div>
-                       <div class="action-row">
-                         <select name="phpInstallVersion" class="php-version-select" title="${t('phpVersionPickTitle')}">
-                           ${(state.phpVersions?.installable ?? []).map((v) => `<option value="${escapeHtml(v)}" ${v === (state.phpConfig?.managedVersion || '') ? 'selected' : ''}>PHP ${escapeHtml(v)}</option>`).join('')}
-                         </select>
-                         <button type="button" class="secondary" data-action="php-install-version" title="${t('phpVersionInstallTitle')}">${t('phpVersionInstall')}</button>
-                         <button type="button" class="secondary" data-action="php-install">${state.phpConfig?.installed ? t('phpReinstall') : t('phpInstall')}</button>
-                       </div>
-                     </div>
-                     ${phpVersionsList()}
-                     <p class="hint" style="margin-top: 4px;">${state.phpConfig?.installed ? `${t('phpInstalledAt')}: ${escapeHtml(state.phpConfig.installDir)} (${escapeHtml(state.phpConfig.version || '?')})` : t('phpNotInstalledHint')}</p>
-                     ${state.phpConfig?.installed ? `
-                     <form id="php-config-form" class="form-grid">
-                       <label>${t('phpMemoryLimit')}<input name="memoryLimit" value="${escapeHtml(state.phpConfig.memoryLimit || '256M')}" placeholder="256M" /></label>
-                       <label>${t('phpUploadMax')}<input name="uploadMax" value="${escapeHtml(state.phpConfig.uploadMax || '64M')}" placeholder="64M" /></label>
-                       <label>${t('phpPostMax')}<input name="postMax" value="${escapeHtml(state.phpConfig.postMax || '64M')}" placeholder="64M" /></label>
-                       <label>${t('phpMaxExecTime')}<input type="number" min="1" max="600" name="maxExecTime" value="${escapeHtml(String(state.phpConfig.maxExecTime || 120))}" /></label>
-                       <label class="wide">${t('phpExtraExtensions')}<input name="extraExts" value="${escapeHtml((state.phpConfig.extraExts || []).join(', '))}" placeholder="soap, xsl, exif" /></label>
-                       <div class="action-row wide"><button type="submit">${t('phpSaveConfig')}</button></div>
-                     </form>
-                     <p class="hint">${t('phpIniPath')}: ${escapeHtml(state.phpConfig.iniPath)}</p>
-                     ` : ''}
-                     <p class="hint">${t('stackHint')}</p>
-                   </article>
-                  `
-                 : state.activeTab === 'logs'
-                ? `
-                  <section class="panel logs-panel">
-                    <div class="panel-header">
-                      <div>
-                        <p class="eyebrow">${t('logs')}</p>
-                        <h2>${t('logsSubtitle')}</h2>
-                      </div>
-                      <span class="pill pill-outline">${escapeHtml(`${appState.status.lastLogs.length} ${t('entries')}`)}</span>
-                    </div>
-                    <div class="log-stream">${logRows(appState.status.lastLogs)}</div>
-                  </section>
-                `
-               : state.activeTab === 'terminal'
-                ? renderTerminalPanel()
-               : `
-                  <article class="panel compact-panel">
-                    <div class="panel-header">
-                      <div>
-                        <p class="eyebrow">${t('application')}</p>
-                        <h2>Exposely</h2>
-                      </div>
-                    </div>
-                    <div class="metric-grid">
-                      <div class="metric-card">
-                         <span class="summary-label">${t('version')}</span>
-                         <strong>${escapeHtml(displayVersionLabel(appState.productVersion))}</strong>
-                      </div>
-                      <div class="metric-card">
-                         <span class="summary-label">${t('platform')}</span>
-                         <strong>Windows</strong>
-                      </div>
-                    </div>
-                    <div class="metric-grid" style="margin-top: 20px;">
-                      <div class="metric-card">
-                        <span class="summary-label">${t('updates')}</span>
-                        <strong>${escapeHtml(appState.update.available ? `${displayVersionLabel(appState.update.latestVersion)} ${t('available')}` : appState.update.checked ? t('upToDate') : t('checkingBackground'))}</strong>
-                        <p style="margin-top: 10px; color: var(--text-secondary);">${escapeHtml(appState.update.message || t('updateHint'))}</p>
-                        <div class="action-row" style="margin-top: 14px;">
-                          <button type="button" class="secondary" data-action="check-updates">${t('checkNow')}</button>
-                          <button type="button" ${appState.update.available ? '' : 'disabled'} data-action="install-latest-update">${t('updateNow')}</button>
-                          <button type="button" ${appState.update.releaseUrl ? '' : 'disabled'} data-action="open-latest-release">${t('openRelease')}</button>
-                        </div>
-                      </div>
-                    </div>
-                    <div style="padding: 24px; color: var(--text-secondary); line-height: 1.6;">
-                      <p>${t('aboutDescription')}</p>
-                      <p style="margin-top: 16px;">${t('aboutCreator')}</p>
-                      <p style="margin-top: 16px; color: var(--text-primary); font-weight: 500;">${t('aboutLicense')}</p>
-                    </div>
-                  </article>
-               `
-          }
-
-        </section>
-      </section>
-
-    </main>
+        <main class="main-content">
+          ${bannersHtml}
+          ${editorPanelHtml}
+          ${viewHead}
+          ${headerHint ? `<p class="header-hint">${escapeHtml(headerHint)}</p>` : ''}
+          ${viewBody}
+          ${state.notice ? `<section class="toast toast-${state.notice.tone}">${escapeHtml(state.notice.message)}</section>` : ''}
+        </main>
+      </div>
+      ${projectPickerHtml}
+    </div>
   `;
 
   bindForms();
@@ -1480,10 +1577,9 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
     // they don't get yanked back to the top.
     restoreMainScroll(previousScroll);
   }
-  // The sidebar project list is identical on every tab and scrolls
-  // independently, so its position survives even tab switches — losing
-  // your place in a long list because you opened Settings and came back
-  // is exactly what we want to avoid.
+  // The project list scrolls independently of the detail pane, so its
+  // position survives even tab switches — losing your place in a long list
+  // because you opened Settings and came back is exactly what we want to avoid.
   restoreProjectsScroll(previousProjectsScroll);
 }
 
@@ -1519,20 +1615,90 @@ function phpVersionsList(): string {
   return `<div class="php-versions-row"><span class="summary-label">${t('phpInstalledVersions')}</span><div class="php-version-chips">${rows}</div></div>`;
 }
 
-function stackStatusCards(): string {  if (!state.stackStatuses.length) {
+// One compact tab strip for the managed services instead of three cards
+// side by side: the active tab shows that service's status and Start/Stop
+// action, which stays readable in the narrow settings pane.
+function stackStatusTabs(): string {
+  if (!state.stackStatuses.length) {
     return '';
   }
-  return state.stackStatuses
+  const active = state.stackStatuses.some((st) => st.service === state.stackTab)
+    ? state.stackTab
+    : state.stackStatuses[0].service;
+  const selected = state.stackStatuses.find((st) => st.service === active) ?? state.stackStatuses[0];
+
+  const tabs = state.stackStatuses
     .map((st) => {
-      const badge = st.running ? '<span class="pill pill-success">running</span>' : '<span class="pill pill-outline">stopped</span>';
-      const detail = st.running ? `pid ${st.pid}` : escapeHtml(st.lastError || '');
-      return `<div class="metric-card">
-        <span class="summary-label">${escapeHtml(st.service)}</span>
-        <strong>${badge}</strong>
-        <p>${escapeHtml(detail)}</p>
-      </div>`;
+      const isActive = st.service === active;
+      return `<button type="button" role="tab" aria-selected="${isActive ? 'true' : 'false'}"
+        class="stack-tab ${isActive ? 'active' : ''}" data-action="stack-tab" data-id="${escapeHtml(st.service)}">
+        <span class="status-dot ${st.running ? 'tone-live' : 'tone-idle'}"></span>
+        <span>${escapeHtml(stackServiceLabel(st.service))}</span>
+      </button>`;
     })
     .join('');
+
+  const badge = selected.running
+    ? `<span class="pill pill-success">${t('running')}</span>`
+    : `<span class="pill pill-outline">${t('stopped')}</span>`;
+  const detail = selected.running ? `pid ${selected.pid}` : (selected.lastError || '');
+  const action = selected.running ? 'stack-stop-service' : 'stack-start-service';
+
+  return `
+    <div class="stack-tabs" role="tablist" aria-label="${escapeHtml(t('stackSectionTitle'))}">
+      ${tabs}
+    </div>
+    <div class="stack-tab-panel" role="tabpanel">
+      <div class="stack-tab-summary">
+        ${badge}
+        ${detail ? `<span class="stack-tab-detail">${escapeHtml(detail)}</span>` : ''}
+      </div>
+      <div class="action-row">
+        <button type="button" class="secondary" data-action="${action}" data-id="${escapeHtml(selected.service)}">${selected.running ? t('stackStop') : t('stackStart')}</button>
+      </div>
+    </div>
+  `;
+}
+
+function stackServiceLabel(service: string): string {
+  switch (service) {
+    case 'php':
+      return 'PHP';
+    case 'mysql':
+      return 'MySQL';
+    case 'nginx':
+      return 'Nginx';
+    default:
+      return service;
+  }
+}
+
+// Per-service start/stop menu for the topbar stack pill. Start All / Stop All
+// stay available at the bottom so the old one-click behaviour is unchanged.
+function stackMenuHtml(): string {
+  const runningCount = state.stackStatuses.filter((s) => s.running).length;
+  const rows = state.stackStatuses
+    .map((st) => `
+      <div class="stack-menu-row">
+        <div class="stack-menu-copy">
+          <span class="stack-menu-service">${escapeHtml(stackServiceLabel(st.service))}</span>
+          <span class="stack-menu-state ${st.running ? 'stack-menu-state-on' : ''}">${st.running ? t('running') : t('stopped')}</span>
+        </div>
+        <button type="button" class="secondary stack-menu-action" data-action="${st.running ? 'stack-stop-service' : 'stack-start-service'}" data-id="${escapeHtml(st.service)}">
+          ${st.running ? t('stackStop') : t('stackStart')}
+        </button>
+      </div>
+    `)
+    .join('');
+
+  return `<div class="dropdown-menu stack-menu" role="menu">
+    <div class="stack-menu-head">${t('stackMenuTitle')}</div>
+    ${rows}
+    <div class="stack-menu-foot">
+      <button type="button" class="secondary stack-menu-all" data-action="stack-start-all">${t('stackStartAll')}</button>
+      <button type="button" class="secondary stack-menu-all" data-action="stack-stop-all" ${runningCount === 0 ? 'disabled' : ''}>${t('stackStopAll')}</button>
+    </div>
+  </div>`;
 }
 
 function formChecked(form: HTMLFormElement, name: string): boolean {
@@ -1588,12 +1754,53 @@ async function confirmProjectSwitch(nextProjectID: string): Promise<boolean> {
   return window.confirm(t('confirmSwitchProject'));
 }
 
+// Filters a list of options in place (no re-render) so the search box keeps
+// focus while the user types. Option elements must carry a lowercased
+// data-search attribute. An optional empty-state element is toggled when the
+// query hides every row. Re-applied after each render so a background status
+// poll that rebuilds the list underneath an open picker does not clear it.
+function bindInPlaceFilter(
+  input: HTMLInputElement,
+  optionSelector: string,
+  onQuery: (value: string) => void,
+  emptyEl: HTMLElement | null = null,
+) {
+  const apply = () => {
+    const query = input.value.trim().toLowerCase();
+    let visible = 0;
+    root.querySelectorAll<HTMLElement>(optionSelector).forEach((option) => {
+      const match = !query || (option.dataset.search ?? '').includes(query);
+      option.hidden = !match;
+      if (match) visible += 1;
+    });
+    if (emptyEl) emptyEl.hidden = visible > 0;
+  };
+  input.addEventListener('input', () => {
+    onQuery(input.value);
+    apply();
+  });
+  apply();
+  input.focus();
+  const caret = input.value.length;
+  try {
+    input.setSelectionRange(caret, caret);
+  } catch {
+    // Some input types reject setSelectionRange — ignore.
+  }
+}
+
 function bindForms() {
   const projectSearch = root.querySelector<HTMLInputElement>('#project-search');
-  projectSearch?.addEventListener('input', () => {
-    state.projectSearch = projectSearch.value;
-    render();
-  });
+  if (projectSearch) {
+    bindInPlaceFilter(
+      projectSearch,
+      '.project-row',
+      (value) => {
+        state.projectSearch = value;
+      },
+      root.querySelector<HTMLElement>('.picker-empty'),
+    );
+  }
 
   const licenseForm = root.querySelector<HTMLFormElement>('#license-form');
   licenseForm?.addEventListener('submit', async (event) => {
@@ -1747,19 +1954,9 @@ function bindForms() {
     }
   });
 
-  const terminalProjectSelect = root.querySelector<HTMLSelectElement>('#terminal-project');
-  terminalProjectSelect?.addEventListener('change', () => {
-    const nextId = terminalProjectSelect.value || null;
-    state.terminalProjectId = nextId;
-    state.selectedProjectId = nextId;
-    rememberSelectedProject(nextId);
-    render();
-  });
-
-  if (state.activeTab === 'terminal') {
-    const output = root.querySelector<HTMLElement>('#terminal-output');
-    if (output) output.scrollTop = output.scrollHeight;
-  }
+  // Keep the embedded terminal scrolled to its newest line after a render.
+  const terminalOutput = root.querySelector<HTMLElement>('#terminal-output');
+  if (terminalOutput) terminalOutput.scrollTop = terminalOutput.scrollHeight;
 }
 
 async function handleAction(action: string, id: string | null, sourceEl: HTMLElement | null = null) {
@@ -1774,6 +1971,11 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       render();
       return;
     }
+    case 'toggle-sidebar':
+      state.sidebarCollapsed = !state.sidebarCollapsed;
+      rememberSidebarCollapsed(state.sidebarCollapsed);
+      render();
+      return;
     case 'toggle-theme': {
       const newTheme = nextTheme();
       setTheme(newTheme);
@@ -1787,33 +1989,43 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
     case 'tab-overview':
       state.activeTab = 'overview';
       state.projectMenuOpen = false;
+      state.projectPickerOpen = false;
+      state.projectSearch = '';
       render();
       return;
     case 'tab-settings':
       state.activeTab = 'settings';
       state.projectMenuOpen = false;
+      state.projectPickerOpen = false;
+      state.projectSearch = '';
       render();
       return;
     case 'tab-logs':
       state.activeTab = 'logs';
       state.projectMenuOpen = false;
-      render();
-      return;
-    case 'tab-terminal':
-      state.activeTab = 'terminal';
-      state.projectMenuOpen = false;
-      if (!state.terminalProjectId) {
-        state.terminalProjectId = state.selectedProjectId;
-      }
+      state.projectPickerOpen = false;
+      state.projectSearch = '';
       render();
       return;
     case 'tab-about':
       state.activeTab = 'about';
       state.projectMenuOpen = false;
+      state.projectPickerOpen = false;
+      state.projectSearch = '';
       render();
       return;
     case 'toggle-project-menu':
       state.projectMenuOpen = !state.projectMenuOpen;
+      render();
+      return;
+    case 'open-project-picker':
+      state.projectPickerOpen = true;
+      state.projectMenuOpen = false;
+      render();
+      return;
+    case 'close-project-picker':
+      state.projectPickerOpen = false;
+      state.projectSearch = '';
       render();
       return;
     case 'select-project':
@@ -1823,12 +2035,16 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       }
       rememberSelectedProject(state.selectedProjectId);
       state.projectMenuOpen = false;
+      state.projectPickerOpen = false;
+      state.projectSearch = '';
       render();
       return;
     case 'new-project':
       state.editorOpen = true;
       state.editorMode = 'create';
       state.editorProject = blankProject();
+      state.projectPickerOpen = false;
+      state.projectSearch = '';
       render({ refreshProjectForm: true });
       return;
     case 'edit-project':
@@ -1837,6 +2053,8 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
         state.editorMode = 'edit';
         state.editorProject = { ...selectedProject()! };
         state.projectMenuOpen = false;
+        state.projectPickerOpen = false;
+        state.projectSearch = '';
         render({ refreshProjectForm: true });
       }
       return;
@@ -1947,19 +2165,23 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       }
       return;
     }
-    case 'stack-toggle-all': {
-      // One-click switch in the navbar: turn the whole stack on, or off
-      // when any service is already running.
-      const turningOff = state.stackStatuses.some((s) => s.running);
-      const action = turningOff ? api.stopStack() : api.startStack();
-      const next = await withAction(turningOff ? t('stackStopAll') : t('stackStartAll'), () => action);
-      if (next) {
-        state.appState = next;
-        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
-        setNotice('success', turningOff ? t('stackStopped') : t('stackStarted'));
+    case 'overview-tab':
+      if (id === 'project' || id === 'terminal') {
+        state.overviewTab = id;
+        render();
       }
       return;
-    }
+    case 'stack-tab':
+      if (id) {
+        state.stackTab = id;
+        render();
+      }
+      return;
+    case 'toggle-stack-menu':
+      state.stackMenuOpen = !state.stackMenuOpen;
+      state.projectMenuOpen = false;
+      render();
+      return;
     case 'stack-start-all': {
       const next = await withAction(t('stackStartAll'), () => api.startStack());
       if (next) {
@@ -2296,8 +2518,9 @@ root.addEventListener('click', (event) => {
   // Close project menu if clicking outside of the dropdown container,
   // but DON'T close it if we are clicking the toggle button itself (as that is handled by handleAction).
   const insideDropdown = target?.closest('.dropdown');
-  if (state.projectMenuOpen && !insideDropdown) {
+  if ((state.projectMenuOpen || state.stackMenuOpen) && !insideDropdown) {
     state.projectMenuOpen = false;
+    state.stackMenuOpen = false;
     render();
   }
 
@@ -2307,6 +2530,21 @@ root.addEventListener('click', (event) => {
   const id = actionElement.dataset.id ?? selectedProject()?.id ?? null;
   if (!action) return;
   void handleAction(action, id, actionElement);
+});
+
+root.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (state.projectPickerOpen) {
+    state.projectPickerOpen = false;
+    state.projectSearch = '';
+    render();
+    return;
+  }
+  if (state.projectMenuOpen || state.stackMenuOpen) {
+    state.projectMenuOpen = false;
+    state.stackMenuOpen = false;
+    render();
+  }
 });
 
 async function bootstrap() {

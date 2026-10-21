@@ -113,8 +113,15 @@ type PHPVersionInstall struct {
 // InstalledPHPVersions enumerates the managed PHP installs on disk:
 // every versioned directory plus the legacy root when present. Sorted
 // by version, oldest first.
+//
+// When the legacy root holds the same version as one of the versioned
+// directories (the common upgrade path: the old layout was copied into
+// a versioned dir), only the versioned entry is reported. Reporting
+// both made the UI show two identical "PHP 8.4.25 · ACTIVE" chips and
+// made "Use" buttons appear for a version already in use.
 func InstalledPHPVersions(appDataDir string) []PHPVersionInstall {
 	var out []PHPVersionInstall
+	seen := make(map[string]bool)
 	root := PHPVersionsRoot(appDataDir)
 	entries, err := os.ReadDir(root)
 	if err == nil {
@@ -125,16 +132,20 @@ func InstalledPHPVersions(appDataDir string) []PHPVersionInstall {
 			dir := filepath.Join(root, e.Name())
 			if PHPDirHasBins(dir) {
 				out = append(out, PHPVersionInstall{Version: e.Name(), Dir: dir})
+				seen[e.Name()] = true
 			}
 		}
 	}
-	// Legacy root install (files directly in stacks/php).
+	// Legacy root install (files directly in stacks/php). Skip it when
+	// its version is already listed from a versioned directory.
 	if PHPDirHasBins(root) {
 		version := PHPVersionOf(root)
 		if version == "" || !looksLikeVersion(version) {
 			version = PHPVersion
 		}
-		out = append(out, PHPVersionInstall{Version: version, Dir: root, Legacy: true})
+		if !seen[version] {
+			out = append(out, PHPVersionInstall{Version: version, Dir: root, Legacy: true})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return compareVersionPaths(out[i].Version, out[j].Version) < 0

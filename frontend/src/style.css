@@ -22,6 +22,11 @@
   --muted: #8b95ac;
   --muted-strong: #c7d0e0;
 
+  /* Brand logo (inline SVG in the topbar) */
+  --logo-a: #3de0ff;
+  --logo-b: #a46bff;
+  --logo-glow: rgba(61, 224, 255, 0.55);
+
   --accent: #3de0ff;
   --accent-strong: #5debff;
   --accent-soft: rgba(61, 224, 255, 0.12);
@@ -62,6 +67,11 @@
   --text: #0d1524;
   --muted: #5b6880;
   --muted-strong: #33415c;
+
+  /* Deeper logo strokes so the mark keeps contrast on light surfaces. */
+  --logo-a: #0891b2;
+  --logo-b: #7c3aed;
+  --logo-glow: transparent;
   --accent: #0891b2;
   --accent-strong: #06b6d4;
   --accent-soft: rgba(8, 145, 178, 0.1);
@@ -120,6 +130,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  white-space: nowrap;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 0.6rem 1rem;
@@ -214,36 +225,147 @@ textarea::placeholder {
 }
 
 label {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   font-size: 0.82rem;
   font-weight: 600;
+  line-height: 1.25;
   color: var(--text);
-  margin-bottom: 4px;
 }
 
 /* Shell Layout */
 .shell {
-  display: grid;
-  grid-template-columns: 300px 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   width: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 18px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: rgba(14, 17, 24, 0.92);
+  backdrop-filter: blur(14px);
+  z-index: 20;
+}
+
+:root[data-theme='light'] .topbar {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 212px;
+}
+
+.brand img {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(61, 224, 255, 0.28);
+  background: linear-gradient(145deg, rgba(61, 224, 255, 0.18), rgba(61, 224, 255, 0.05));
+  padding: 4px;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.brand-text h1 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.brand-tag {
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.topbar .top-nav {
+  flex: 1;
+  justify-content: center;
+  gap: 2px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-muted);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  width: 300px;
+  flex: 0 0 300px;
+  padding: 14px 12px;
   background-color: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   height: 100%;
   overflow: hidden;
 }
 
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.sidebar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-title h3 {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.sidebar-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
 .main-content {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   overflow-y: auto;
-  padding: 0 20px 20px;
+  padding: 16px 20px 24px;
   gap: 16px;
 }
 
@@ -318,8 +440,15 @@ label {
   filter: none;
 }
 
-.lang-switch span {
-  display: inline-flex;
+.lang-switch {
+  width: auto;
+  min-width: 40px;
+  padding: 0 8px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
 }
 
 .stack-toggle {
@@ -364,12 +493,80 @@ label {
   font-variant-numeric: tabular-nums;
 }
 
-.flag-icon {
-  width: 24px;
-  height: 16px;
-  display: block;
-  border-radius: 3px;
-  object-fit: cover;
+.stack-toggle[aria-expanded="true"] {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--panel-muted);
+}
+
+.stack-menu {
+  min-width: 264px;
+  padding: 6px;
+}
+
+.stack-menu-head {
+  padding: 6px 10px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stack-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-radius: 7px;
+}
+
+.stack-menu-row:hover {
+  background: var(--panel-muted);
+}
+
+.stack-menu-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stack-menu-service {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stack-menu-state {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.stack-menu-state-on {
+  color: var(--success);
+}
+
+.stack-menu-action {
+  padding: 0.32rem 0.7rem;
+  font-size: 0.76rem;
+  border-radius: 7px;
+}
+
+.stack-menu-foot {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.stack-menu-all {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.78rem;
+  border-radius: 7px;
 }
 
 .status-indicator {
@@ -438,56 +635,6 @@ label {
 .sidebar-create-section {
   flex: 0 0 auto;
   padding-bottom: 0;
-}
-
-.sidebar-projects-section {
-  flex: 1;
-  overflow-y: auto;
-  padding-top: 4px;
-}
-
-.project-search {
-  padding: 0 0 8px;
-}
-
-.project-search input {
-  height: 34px;
-  font-size: 0.83rem;
-  background: var(--bg-elevated);
-}
-
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0 4px 6px;
-}
-
-.section-header h3 {
-  margin: 0;
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-}
-
-.add-button {
-  padding: 4px;
-  width: 24px;
-  height: 24px;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  border-radius: 6px;
-  box-shadow: none;
-}
-
-.add-button:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
-  transform: none;
-  filter: none;
 }
 
 .project-list {
@@ -790,6 +937,10 @@ label {
   gap: 10px;
 }
 
+.metric-card p {
+  margin: 0;
+}
+
 .metric-card strong {
   font-size: 1.05rem;
   font-weight: 700;
@@ -858,7 +1009,7 @@ label {
 /* Forms */
 .form-grid {
   display: grid;
-  gap: 20px;
+  gap: 14px;
 }
 
 .editor-grid {
@@ -867,7 +1018,15 @@ label {
 
 .action-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+/* Form controls default to width:100% (full field rows). Inside a button
+   row that consumes the whole line and forces the buttons to wrap, so
+   let them size to their content instead. */
+.action-row select {
+  width: auto;
 }
 
 label.wide {
@@ -876,6 +1035,7 @@ label.wide {
 
 label.checkbox-row {
   display: flex;
+  flex-direction: row;
   align-items: flex-start;
   gap: 10px;
   grid-column: 1 / -1;
@@ -1006,6 +1166,7 @@ label.checkbox-row small.hint {
 .dropdown-item {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
   width: 100%;
   padding: 8px 12px;
@@ -1034,21 +1195,37 @@ label.checkbox-row small.hint {
   background: var(--danger-soft);
 }
 
+@media (max-width: 1100px) {
+  .brand-tag {
+    display: none;
+  }
+  .brand {
+    min-width: 132px;
+  }
+}
+
 @media (max-width: 1024px) {
-  .shell {
-    grid-template-columns: 240px 1fr;
+  .sidebar {
+    width: 260px;
+    flex-basis: 260px;
+  }
+  .top-nav-item span {
+    display: none;
+  }
+  .top-nav-item {
+    padding: 8px 10px;
   }
 }
 
 @media (max-width: 768px) {
-  .shell {
-    grid-template-columns: 1fr;
-  }
   .sidebar {
     display: none;
   }
   .editor-grid {
     grid-template-columns: 1fr;
+  }
+  .brand {
+    min-width: 0;
   }
 }
 
@@ -1213,28 +1390,119 @@ label.checkbox-row small.hint {
   flex-direction: column;
   gap: 14px;
 }
-.terminal-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: flex-end;
+
+/* Terminal embedded under the selected project (overview). */
+.terminal-in-project {
+  padding-top: 0;
 }
-.terminal-project-label {
+
+.terminal-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.terminal-section-head .eyebrow {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.terminal-cwd {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.terminal-switcher {
+  display: inline-block;
+}
+.terminal-switch-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+}
+.terminal-switch-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.terminal-switch-caret {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+.terminal-project-menu {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 200px;
-  font-size: 12px;
+  min-width: 280px;
+  padding: 8px;
+}
+.terminal-project-search {
+  width: 100%;
+}
+.terminal-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 44vh;
+  overflow: auto;
+}
+.terminal-project-option {
+  align-items: center;
+  justify-content: space-between;
+}
+/* .dropdown-item sets display:flex, which would beat the UA [hidden] rule. */
+.terminal-project-option[hidden] {
+  display: none;
+}
+.terminal-project-option-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  text-align: left;
+}
+.terminal-project-option-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.87rem;
+  font-weight: 600;
+}
+.terminal-project-option-sub {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--muted);
 }
-.terminal-folder {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+.terminal-project-option.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
-.terminal-folder .hero-project-path {
+.terminal-project-option.is-active .terminal-project-option-sub {
+  color: var(--accent);
+}
+.terminal-project-check {
+  flex: 0 0 auto;
+}
+.terminal-project-sep {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--border);
+}
+.terminal-project-empty,
+.terminal-project-hint {
   margin: 0;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  color: var(--muted);
 }
 .terminal-command-row {
   display: flex;
@@ -1434,4 +1702,644 @@ label.checkbox-row small.hint {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* ── App shell v2: SplitVideos-style sidebar layout ─────────────────
+   Sidebar carries navigation; the Projects view shows one project with
+   a modal picker for switching between projects. */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background-color: var(--bg-main);
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.topbar {
+  flex: 0 0 auto;
+  min-height: 56px;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px;
+}
+
+.brand {
+  min-width: 0;
+  gap: 11px;
+}
+
+.brand-mark {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid rgba(61, 224, 255, 0.28);
+  background: linear-gradient(145deg, rgba(61, 224, 255, 0.18), rgba(61, 224, 255, 0.04));
+  box-shadow: none;
+  cursor: pointer;
+}
+
+/* The logo doubles as the sidebar show/hide control: hovering it reveals
+   a sidebar icon overlay instead of dedicating a permanent topbar button. */
+.brand-mark:hover {
+  transform: none;
+  filter: none;
+  border-color: rgba(61, 224, 255, 0.6);
+}
+
+.brand-mark:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.brand-mark-toggle {
+  position: absolute;
+  inset: -1px;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: rgba(8, 12, 18, 0.78);
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.brand-mark:hover .brand-mark-toggle,
+.brand-mark:focus-visible .brand-mark-toggle {
+  opacity: 1;
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  object-fit: contain;
+}
+
+.brand-logo {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.logo-stop-a {
+  stop-color: var(--logo-a);
+}
+
+.logo-stop-b {
+  stop-color: var(--logo-b);
+}
+
+.logo-core {
+  filter: drop-shadow(0 0 2px var(--logo-glow));
+}
+
+:root[data-theme='light'] .brand-mark {
+  border-color: rgba(8, 145, 178, 0.35);
+  background: linear-gradient(145deg, rgba(8, 145, 178, 0.14), rgba(124, 58, 237, 0.05));
+}
+
+.sidebar {
+  width: 232px;
+  flex: 0 0 232px;
+  gap: 8px;
+  padding: 12px 10px 14px;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0;
+}
+
+.sidebar-label {
+  padding: 12px 11px 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted-2, var(--muted));
+}
+
+.sidebar-nav .sidebar-label:first-child {
+  padding-top: 4px;
+}
+
+.sidebar-spacer {
+  flex: 1 1 auto;
+  min-height: 12px;
+}
+
+.nav-item {
+  padding: 9px 11px;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  gap: 10px;
+  border: 1px solid transparent;
+}
+
+.nav-item svg {
+  flex: 0 0 auto;
+  opacity: 0.85;
+}
+
+.nav-item.active svg {
+  opacity: 1;
+}
+
+.nav-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-count {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.nav-item.active .nav-count {
+  background: rgba(61, 224, 255, 0.12);
+  border-color: rgba(61, 224, 255, 0.3);
+  color: var(--accent);
+}
+
+.status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 12px;
+  text-align: left;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.status-card:hover {
+  border-color: var(--border-strong);
+  transform: none;
+  filter: none;
+}
+
+.status-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-card-arrow {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.status-card-sub {
+  font-size: 0.74rem;
+}
+
+.status-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  font-size: 0.7rem;
+}
+
+.status-card-v {
+  font-family: var(--mono);
+}
+
+.status-dot.tone-live {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+
+.status-dot.tone-idle {
+  background: var(--muted);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chip-live {
+  color: var(--success);
+  border-color: rgba(61, 219, 140, 0.35);
+  background: var(--success-soft);
+}
+
+.chip-live .status-dot {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+
+.chip-idle .status-dot {
+  background: var(--muted);
+}
+
+.chip-muted {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.main-content {
+  padding: 18px 22px 26px;
+  gap: 16px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.page-head-main {
+  min-width: 0;
+}
+
+.page-head h1 {
+  margin: 2px 0 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.page-head-desc {
+  margin: 6px 0 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+  max-width: 64ch;
+}
+
+.page-head-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.page-head-chips,
+.page-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+button.icon-only {
+  padding: 0.6rem 0.68rem;
+}
+
+.hero-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hero-target strong {
+  margin-bottom: 8px;
+}
+
+.empty-state-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 40px 20px;
+}
+
+.empty-state-panel .empty-copy {
+  padding: 0;
+}
+
+@media (max-width: 1180px) {
+  .brand-tag {
+    display: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  .sidebar {
+    width: 200px;
+    flex-basis: 200px;
+  }
+  .topbar .stack-toggle span:not(.stack-toggle-badge) {
+    display: none;
+  }
+}
+
+/* ── Clean workspace surfaces ───────────────────────────────────────
+   The main column reads like the sidebar workspace: flat sections
+   separated by hairlines instead of nested cards and drop shadows. */
+
+.app.sidebar-collapsed .sidebar {
+  display: none;
+}
+
+.panel {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.panel + .panel {
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+
+.panel-header {
+  margin-bottom: 14px;
+}
+
+.empty-state-panel {
+  padding: 40px 20px;
+}
+
+/* The project editor is an active form, so it keeps a light boundary
+   without turning into a floating card. */
+.editor-panel {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-muted);
+}
+
+.selected-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.hero-project {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.inline-url-row {
+  padding: 10px 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.usage-panel {
+  margin-top: 0;
+  /* The section header should read as attached to its cards, not to the
+     divider above: give the divider breathing room, then keep the label
+     tight against the usage grid. */
+  padding: 12px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  gap: 8px;
+}
+
+.metric-grid {
+  gap: 0 22px;
+}
+
+/* Managed stack services: a tab strip keeps the section compact and
+   readable instead of three side-by-side status cards. */
+.stack-status {
+  margin-top: 16px;
+}
+
+.stack-tabs,
+.overview-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.overview-tabs {
+  margin-bottom: 16px;
+}
+
+.stack-tab,
+.overview-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.stack-tab:hover,
+.overview-tab:hover {
+  color: var(--text);
+  background: var(--panel-muted);
+  filter: none;
+  transform: none;
+}
+
+.stack-tab.active,
+.overview-tab.active {
+  color: var(--text);
+  background: var(--panel-muted);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.stack-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+.stack-tab-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stack-tab-detail {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--muted-strong);
+}
+
+.metric-grid-section {
+  margin-top: 16px;
+}
+
+.metric-card {
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px 0 0;
+}
+
+.metric-card-split {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.project-row {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.project-row:hover {
+  background: var(--panel-muted);
+  border-color: transparent;
+}
+
+.project-row.selected {
+  background: var(--accent-soft);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.project-row[hidden],
+.picker-empty[hidden] {
+  display: none;
+}
+
+/* ── Project picker modal ─────────────────────────────────────────── */
+
+.modal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(5, 8, 14, 0.68);
+  backdrop-filter: blur(3px);
+}
+
+:root[data-theme='light'] .modal-backdrop {
+  background: rgba(15, 23, 42, 0.32);
+}
+
+.modal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(520px, 100%);
+  max-height: min(80vh, 640px);
+  padding: 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-xl);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.picker-search {
+  height: 36px;
+  background: var(--bg-elevated);
+}
+
+.picker-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.picker-empty {
+  padding: 18px 10px;
 }

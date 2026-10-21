@@ -1,12 +1,15 @@
 package stacks
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/reaksmeykem/exposely/internal/sysproc"
 )
 
 // sleepHelperPath returns a command that runs a tiny "server" for the
@@ -176,5 +179,78 @@ func TestSetConfigRoundTrip(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// Silence unused-import style issues on other platforms.
 		_ = time.Now
+	}
+}
+
+func TestManagerAdoptsRunningProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping process test in -short mode")
+	}
+	bin, args := sleepHelperPath(t)
+	cmd := exec.Command(bin, args...)
+	cmd.SysProcAttr = sysproc.Hidden()
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	m := NewManager()
+	st := m.Adopt(ServiceMySQL, cmd.Process.Pid)
+	if !st.Running {
+		t.Fatalf("expected adopted service to report running, got %+v", st)
+	}
+	if st.PID != cmd.Process.Pid {
+		t.Fatalf("adopted PID = %d, want %d", st.PID, cmd.Process.Pid)
+	}
+	if got := m.AllStatus(); len(got) == 0 {
+		t.Fatalf("AllStatus returned nothing")
+	} else {
+		mysqlRunning := false
+		for _, status := range got {
+			if status.Service == ServiceMySQL && status.Running && status.PID == cmd.Process.Pid {
+				mysqlRunning = true
+			}
+		}
+		if !mysqlRunning {
+			t.Fatalf("AllStatus should report the adopted mysql service running: %+v", got)
+		}
+	}
+
+	// Adopting twice must not create a duplicate tracking entry.
+	st = m.Adopt(ServiceMySQL, cmd.Process.Pid)
+	if !st.Running || st.PID != cmd.Process.Pid {
+		t.Fatalf("second adopt changed state: %+v", st)
+	}
+
+	// Stop must terminate the adopted tree and clear the status.
+	m.Stop(ServiceMySQL)
+	if got := m.Status(ServiceMySQL); got.Running {
+		t.Fatalf("adopted service still reported running after Stop: %+v", got)
+	}
+}
+
+func TestListeningPIDFindsOwnListener(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("netstat-based helper is Windows-only")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	pid := ListeningPID(port)
+	if pid != os.Getpid() {
+		t.Fatalf("ListeningPID(%d) = %d, want test process %d", port, pid, os.Getpid())
+	}
+	if !ListenPortOwnedByPID(port, pid) {
+		t.Fatalf("ListenPortOwnedByPID(%d, %d) = false", port, pid)
+	}
+	if ListeningPID(1) != 0 {
+		t.Fatalf("ListeningPID(1) should be 0")
 	}
 }
