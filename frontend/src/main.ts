@@ -537,9 +537,11 @@ function terminalOutputHtml(): string {
   if (state.terminalLines.length === 0) {
     return `<span class="terminal-line terminal-empty">${escapeHtml(t('terminalEmpty'))}</span>`;
   }
+  // Each line is a block element, so no newline text nodes between
+  // spans — those would render as blank lines and double the spacing.
   return state.terminalLines
     .map((entry) => `<span class="terminal-line terminal-${escapeHtml(entry.stream || 'stdout')}">${escapeHtml(entry.line) || '&nbsp;'}</span>`)
-    .join('\n');
+    .join('');
 }
 
 // The terminal lives under the selected project instead of being its own
@@ -602,7 +604,6 @@ function appendTerminalLine(stream: string, line: string) {
   row.className = `terminal-line terminal-${stream || 'stdout'}`;
   row.textContent = line || ' ';
   output.appendChild(row);
-  output.appendChild(document.createTextNode('\n'));
   output.scrollTop = output.scrollHeight;
 }
 
