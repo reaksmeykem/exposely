@@ -165,21 +165,75 @@ function nextTheme(): 'dark' | 'light' {
   return currentTheme === 'dark' ? 'light' : 'dark';
 }
 
-function themeIcon(theme: 'dark' | 'light'): string {
-  if (theme === 'dark') {
-    return `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-        <path d="M21 14.6A7.5 7.5 0 0 1 9.4 3 9 9 0 1 0 21 14.6Z" fill="currentColor"/>
-      </svg>
-    `;
-  }
+type IconName =
+  | 'moon'
+  | 'sun'
+  | 'layout-grid'
+  | 'terminal'
+  | 'file-text'
+  | 'sliders'
+  | 'info'
+  | 'circle-check'
+  | 'x'
+  | 'plus'
+  | 'folder'
+  | 'chevron-down'
+  | 'chevron-right'
+  | 'play'
+  | 'square'
+  | 'refresh'
+  | 'ellipsis'
+  | 'pencil'
+  | 'trash'
+  | 'external-link'
+  | 'panel-left'
+  | 'layers'
+  | 'database';
 
-  return `
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="12" cy="12" r="4" fill="currentColor"/>
-      <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.41M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-    </svg>
-  `;
+const ICON_PATHS: Record<IconName, string> = {
+  moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
+  'layout-grid':
+    '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+  terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
+  'file-text':
+    '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  sliders:
+    '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  'circle-check': '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  folder:
+    '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+  'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  square: '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+  refresh:
+    '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  ellipsis:
+    '<circle cx="5" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.7" fill="currentColor" stroke="none"/>',
+  pencil:
+    '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  trash:
+    '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
+  'external-link':
+    '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  'panel-left': '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
+  layers:
+    '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+  database:
+    '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/>',
+};
+
+function icon(name: IconName, size = 16, className = ''): string {
+  const cls = className ? ` class="${className}"` : '';
+  return `<svg${cls} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name]}</svg>`;
+}
+
+function themeIcon(theme: 'dark' | 'light'): string {
+  return icon(theme === 'dark' ? 'moon' : 'sun', 17);
 }
 
 function formatProjectURL(project: ProjectPreset, domain: string): string {
@@ -810,20 +864,11 @@ function restoreFormSnapshot(snap: { fields: FormSnapshot; focus: FocusSnapshot 
 // the change. Those renders keep every other form's drafts but drop the
 // project-form keys so the form shows the new state values.
 function navIcon(tab: 'overview' | 'terminal' | 'logs' | 'settings' | 'about'): string {
-  const attrs = 'width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
-  if (tab === 'overview') {
-    return `<svg ${attrs}><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></svg>`;
-  }
-  if (tab === 'terminal') {
-    return `<svg ${attrs}><polyline points="5 17 10 11 5 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`;
-  }
-  if (tab === 'logs') {
-    return `<svg ${attrs}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>`;
-  }
-  if (tab === 'settings') {
-    return `<svg ${attrs}><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>`;
-  }
-  return `<svg ${attrs}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+  if (tab === 'overview') return icon('layout-grid', 17);
+  if (tab === 'terminal') return icon('terminal', 17);
+  if (tab === 'logs') return icon('file-text', 17);
+  if (tab === 'settings') return icon('sliders', 17);
+  return icon('info', 17);
 }
 
 function navItemMarkup(
@@ -1071,29 +1116,20 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
              state.editorProject.shareMode === 'host-html'
                ? `
                 <div class="field-hint hint-info">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                   <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
-                   <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                 </svg>
+                  ${icon('info', 14)}
                  <span>${t('hintHtml')}</span>
                 </div>
                 `
               : state.editorProject.shareMode === 'auto'
                 ? `
                 <div class="field-hint hint-info">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                   <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
-                   <path d="M7 10V7M7 4H7.01" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                 </svg>
+                  ${icon('info', 14)}
                  <span>${t('hintAuto')}</span>
                 </div>
                 `
                : `
                 <div class="field-hint hint-success">
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                   <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.2"/>
-                   <path d="M4.5 7L6 8.5L9.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                 </svg>
+                  ${icon('circle-check', 14)}
                   <span>${t('hintLocalHost')}</span>
                </div>
              `
@@ -1115,14 +1151,14 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
           <div class="modal-head">
             <h2>${t('projects')}<span class="sidebar-count">${appState.settings.projects.length}</span></h2>
             <button type="button" class="secondary icon-only" data-action="close-project-picker" aria-label="${escapeHtml(t('close'))}" title="${escapeHtml(t('close'))}">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              ${icon('x', 15)}
             </button>
           </div>
           <input id="project-search" class="picker-search" type="search" value="${escapeHtml(state.projectSearch)}" placeholder="${t('searchProjects')}" aria-label="${t('searchProjects')}" autocomplete="off" />
           <div class="project-list picker-list">${projectRows(appState)}</div>
           <div class="modal-foot">
             <button type="button" class="secondary" data-action="new-project">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              ${icon('plus', 15)}
               ${t('newProject')}
             </button>
           </div>
@@ -1133,51 +1169,45 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
 
   const overviewActions = `
     <button type="button" class="secondary picker-trigger" data-action="open-project-picker" aria-haspopup="dialog" title="${escapeHtml(project ? project.displayName : t('projects'))}">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+      ${icon('folder', 15)}
       ${t('projects')}
-      <svg class="terminal-switch-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+      ${icon('chevron-down', 14, 'terminal-switch-caret')}
     </button>
     ${
       appState.status.running
         ? `<button type="button" class="secondary" data-action="stop-tunnel">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12"></rect></svg>
+            ${icon('square', 16)}
             ${t('stop')}
           </button>`
         : `<button type="button" data-action="start-tunnel" ${!canStartTunnel ? 'disabled' : ''}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            ${icon('play', 16)}
             ${escapeHtml(shareAction?.label || t('startTunnel'))}
           </button>`
     }
     <button type="button" class="secondary icon-only" data-action="refresh" title="${t('refreshState')}" aria-label="${t('refreshState')}">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+      ${icon('refresh', 16)}
     </button>
     ${
       project
         ? `
           <div class="dropdown">
             <button type="button" class="secondary icon-only" data-action="toggle-project-menu" aria-haspopup="true" aria-expanded="${state.projectMenuOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('manage'))}" title="${escapeHtml(t('manage'))}">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></svg>
+              ${icon('ellipsis', 16)}
             </button>
             ${
               state.projectMenuOpen
                 ? `
                   <div class="dropdown-menu">
                     <button type="button" class="dropdown-item" data-action="open-project-folder" ${projectFolderPath ? '' : 'disabled'}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-                      </svg>
+                      ${icon('folder', 16)}
                       <span>${t('openFolder')}</span>
                     </button>
                     <button type="button" class="dropdown-item" data-action="edit-project">
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                        <path d="M11.333 2.667a.943.943 0 0 1 1.333 1.333l-6.4 6.4L3.333 11.333l.933-2.933 6.4-5.733Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                      </svg>
+                      ${icon('pencil', 16)}
                       <span>${t('editProject')}</span>
                     </button>
                     <button type="button" class="dropdown-item danger-item" data-action="delete-project">
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                        <path d="M2.667 4h10.666M6 2.667h4M5.333 6v5.333M8 6v5.333M10.667 6v5.333M4.667 4l.4 8A1.333 1.333 0 0 0 6.4 13.333h3.2A1.333 1.333 0 0 0 10.933 12l.4-8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                      </svg>
+                      ${icon('trash', 16)}
                       <span>${t('deleteProject')}</span>
                     </button>
                   </div>
@@ -1217,18 +1247,18 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
             ${projectFolderPath ? `<div class="hero-project-path-row">
               <p class="hero-project-path" title="${escapeHtml(projectFolderPath)}">${escapeHtml(projectFolderPath)}</p>
               <button type="button" class="secondary inline-copy-button" data-action="open-project-folder" data-id="${escapeHtml(project.id)}" aria-label="${t('openFolder')}">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                ${icon('folder', 15)}
                 ${t('openFolder')}
               </button>
             </div>` : ''}
             <div class="inline-url-row">
               <p>${escapeHtml(projectUrl || t('noPublicUrl'))}</p>
               ${projectUrl ? `<button type="button" class="secondary inline-copy-button" data-action="open-url" aria-label="${t('open')}">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+                ${icon('external-link', 15)}
                 ${t('open')}
               </button>` : ''}
               ${!projectUrl && project.shareMode !== 'stable' ? `<button type="button" class="secondary inline-copy-button" data-action="regenerate-url" aria-label="${t('createPublicUrl')}" ${!shareToolReady ? 'disabled' : ''}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                ${icon('refresh', 15)}
                 ${t('refreshUrl')}
               </button>` : ''}
             </div>
@@ -1470,6 +1500,11 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
 
   root.innerHTML = `
     <div class="app ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}">
+      <div class="aurora" aria-hidden="true">
+        <span class="blob blob-a"></span>
+        <span class="blob blob-b"></span>
+        <span class="blob blob-c"></span>
+      </div>
       <header class="topbar">
         <div class="brand">
           <button type="button" class="brand-mark" data-action="toggle-sidebar"
@@ -1489,7 +1524,7 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
               <circle class="logo-core" cx="16" cy="16" r="2.1" fill="url(#exposelyLogoGrad)"></circle>
             </svg>
             <span class="brand-mark-toggle" aria-hidden="true">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+              ${icon('panel-left', 16)}
             </span>
           </button>
           <div class="brand-text">
@@ -1501,14 +1536,14 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
         <div class="topbar-actions">
           <div class="dropdown">
             <button type="button" class="stack-toggle ${stackRunningCount > 0 ? 'stack-toggle-on' : ''}" data-action="toggle-stack-menu" aria-haspopup="true" aria-expanded="${state.stackMenuOpen ? 'true' : 'false'}" title="${t('stackMenuTitle')}" ${!stackConfigured ? 'disabled' : ''}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"></path><circle cx="9" cy="6" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="15" cy="12" r="1.6" fill="currentColor" stroke="none"></circle><circle cx="7" cy="18" r="1.6" fill="currentColor" stroke="none"></circle></svg>
+              ${icon('layers', 15)}
               <span>Stack</span>
               <span class="stack-toggle-badge">${stackRunningCount}/${stackTotalCount}</span>
             </button>
             ${state.stackMenuOpen ? stackMenuHtml() : ''}
           </div>
           <button type="button" class="stack-toggle" data-action="open-database-manager" title="${t('dbManagerTitle')}" ${!stackConfigured ? 'disabled' : ''}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+            ${icon('database', 15)}
             <span>${t('dbManager')}</span>
           </button>
           <button type="button" class="icon-switch" data-action="toggle-theme" aria-label="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}" title="${nextTheme() === 'light' ? t('switchToLight') : t('switchToDark')}">
@@ -1537,7 +1572,7 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
             <div class="status-card-head">
               <span class="status-dot ${tunnelStatus.running ? 'tone-live' : 'tone-idle'}"></span>
               <span class="status-card-title">${t('tunnelLabel')} · ${tunnelStatus.running ? t('running') : t('stopped')}</span>
-              <svg class="status-card-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+              ${icon('chevron-right', 14, 'status-card-arrow')}
             </div>
             <div class="status-card-sub">${t('stackSectionTitle')} ${stackRunningCount}/${stackTotalCount}</div>
             <div class="status-card-foot">
