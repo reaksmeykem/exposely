@@ -734,6 +734,23 @@ function projectRows(appState: AppState): string {
 // "Save Settings" on a scrolled-down page jumps you back to the top.
 let lastRenderedTab: string | null = null;
 
+// Log and status events arrive in bursts: cloudflared writes several log
+// lines at once, and a tunnel can emit a status update per request. A full
+// render() rebuilds the whole page (including up to 2000 terminal lines),
+// so rendering per event made the UI do that work dozens of times a second.
+// Coalescing collapses a burst into one render, keeping the UI responsive
+// while every event still lands in state immediately.
+const EVENT_RENDER_INTERVAL_MS = 150;
+let eventRenderTimer: number | null = null;
+
+function scheduleEventRender() {
+  if (eventRenderTimer !== null) return;
+  eventRenderTimer = window.setTimeout(() => {
+    eventRenderTimer = null;
+    render();
+  }, EVENT_RENDER_INTERVAL_MS);
+}
+
 // captureMainScroll returns the current scrollTop of the .main-content
 // container, or 0 if the page is still loading or hasn't been laid out yet.
 // We use this to restore the user's scroll position across re-renders.
@@ -1709,6 +1726,36 @@ function stackServiceLabel(service: string): string {
   }
 }
 
+// STACK_STATUS_REFRESH_MS paces the background stack-status poll. The
+// binding reconciles against the machine (it may do a port lookup), so
+// this stays well above the UI's render cadence.
+const STACK_STATUS_REFRESH_MS = 15000;
+
+// stackStatusSignature captures the fields the panel renders, so the poll
+// can skip a re-render when nothing changed — a status tick must not
+// rebuild the page under a half-typed form or a scrolled list.
+function stackStatusSignature(statuses: StackServiceStatus[]): string {
+  return statuses
+    .map((st) => `${st.service}:${st.running ? 1 : 0}:${st.pid}:${st.lastError || ''}`)
+    .join('|');
+}
+
+// refreshStackStatuses re-reads the managed stack state, re-rendering only
+// on a real change. Returns the statuses it just read.
+async function refreshStackStatuses(): Promise<StackServiceStatus[]> {
+  const statuses = await api.stackStatus().catch(() => null);
+  if (!statuses) {
+    return state.stackStatuses;
+  }
+  const next = statuses ?? [];
+  const changed = stackStatusSignature(next) !== stackStatusSignature(state.stackStatuses);
+  state.stackStatuses = next;
+  if (changed) {
+    render();
+  }
+  return next;
+}
+
 // Per-service start/stop menu for the topbar stack pill. Start All / Stop All
 // stay available at the bottom so the old one-click behaviour is unchanged.
 function stackMenuHtml(): string {
@@ -2222,7 +2269,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       const next = await withAction(t('stackStartAll'), () => api.startStack());
       if (next) {
         state.appState = next;
-        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        await refreshStackStatuses();
         setNotice('success', t('stackStarted'));
       }
       return;
@@ -2231,7 +2278,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       const next = await withAction(t('stackStopAll'), () => api.stopStack());
       if (next) {
         state.appState = next;
-        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        await refreshStackStatuses();
         setNotice('success', t('stackStopped'));
       }
       return;
@@ -2242,7 +2289,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       const next = await withAction(`${t('stackStart')} ${service}`, () => api.startStackService(service));
       if (next) {
         state.appState = next;
-        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        await refreshStackStatuses();
         setNotice('success', `${service} ${t('stackStarted')}`);
       }
       return;
@@ -2253,7 +2300,7 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       const next = await withAction(`${t('stackStop')} ${service}`, () => api.stopStackService(service));
       if (next) {
         state.appState = next;
-        state.stackStatuses = await api.stackStatus().catch(() => state.stackStatuses);
+        await refreshStackStatuses();
         setNotice('success', `${service} ${t('stackStopped')}`);
       }
       return;
@@ -2635,6 +2682,16 @@ async function bootstrap() {
     // Stack status is optional; ignore when bindings are unavailable.
   });
 
+  // The stack is not owned by this window alone: a service can be started
+  // or stopped from the CLI, by another Exposely instance, or survive as a
+  // leftover after a crash. Re-read the status periodically so the panel
+  // reflects the machine instead of the initial snapshot, which used to
+  // keep saying "stopped" while mysqld was up.
+  window.setInterval(() => {
+    if (!state.appState || document.hidden) return;
+    void refreshStackStatuses();
+  }, STACK_STATUS_REFRESH_MS);
+
   void api.getPHPConfig().then((info) => {
     state.phpConfig = info;
     render();
@@ -2684,7 +2741,7 @@ async function bootstrap() {
     if (!state.appState) return;
     const entry = payload as LogEntry;
     state.appState.status.lastLogs = [...state.appState.status.lastLogs, entry].slice(-300);
-    render();
+    scheduleEventRender();
   });
 
   window.runtime?.EventsOn('status', (payload) => {
@@ -2717,7 +2774,7 @@ async function bootstrap() {
         }
       }
     }
-    render();
+    scheduleEventRender();
   });
 }
 

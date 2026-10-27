@@ -549,8 +549,34 @@ func TestBuildWindowsStartProcessScriptQuotesPath(t *testing.T) {
 	if !strings.Contains(script, "Start-Process -FilePath") {
 		t.Fatalf("expected Start-Process invocation, got %q", script)
 	}
-	if !strings.Contains(script, `"C:\\Users\\User\\AppData\\Local\\Temp\\Exposely Updates\\1.0.19-Exposely-amd64-installer.exe"`) {
-		t.Fatalf("expected quoted installer path, got %q", script)
+	// Single-quoted so PowerShell keeps the path literal: a double-quoted
+	// literal would expand `$` and treat a backtick as an escape.
+	if !strings.Contains(script, `'C:\Users\User\AppData\Local\Temp\Exposely Updates\1.0.19-Exposely-amd64-installer.exe'`) {
+		t.Fatalf("expected a single-quoted installer path, got %q", script)
+	}
+}
+
+func TestBuildWindowsStartProcessScriptKeepsHostilePathLiteral(t *testing.T) {
+	// A path containing a quote must not be able to close the literal and
+	// append its own PowerShell statement.
+	script := buildWindowsStartProcessScript(`C:\Temp\it's $env:TEMP\Exposely.exe`)
+
+	if !strings.Contains(script, `'C:\Temp\it''s $env:TEMP\Exposely.exe'`) {
+		t.Fatalf("expected the quote doubled and $ left literal, got %q", script)
+	}
+	if strings.Contains(script, `';`) || strings.Contains(script, "Remove-Item") {
+		t.Fatalf("expected no statement injection, got %q", script)
+	}
+}
+
+func TestBuildWindowsReplaceScriptKeepsPathsLiteral(t *testing.T) {
+	script := buildWindowsReplaceScript(99, `C:\Temp\it's $env:X\Exposely.exe`, `C:\Temp\it's $env:X\Exposely.exe.download`)
+
+	if !strings.Contains(script, `$target = 'C:\Temp\it''s $env:X\Exposely.exe'`) {
+		t.Fatalf("expected a single-quoted target path, got %q", script)
+	}
+	if !strings.Contains(script, `$downloaded = 'C:\Temp\it''s $env:X\Exposely.exe.download'`) {
+		t.Fatalf("expected a single-quoted downloaded path, got %q", script)
 	}
 }
 

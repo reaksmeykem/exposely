@@ -112,6 +112,24 @@ jobs:
         shell: pwsh
         run: go build -trimpath "-ldflags=-s -w" -o build/bin/exposely-cli-macos-universal ./cmd/exposely
 
+      - name: Publish checksums
+        shell: pwsh
+        run: |
+          # The macOS builds have no in-app updater, so this file is for
+          # people verifying a manual download. It carries a distinct name
+          # because both jobs upload into the same release.
+          $assetDir = "build/bin"
+          $lines = foreach ($name in @("Exposely-macos-universal.zip", "exposely-cli-macos-universal")) {
+            $path = Join-Path $assetDir $name
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing release asset for checksums: $path"
+            }
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name"
+          }
+
+          $lines | Out-File -FilePath "$assetDir/SHA256SUMS-macos" -Encoding ascii
+
       - name: Create or update GitHub release
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -133,6 +151,7 @@ jobs:
           gh release upload $env:RELEASE_TAG `
             "build/bin/Exposely-macos-universal.zip" `
             "build/bin/exposely-cli-macos-universal" `
+            "build/bin/SHA256SUMS-macos" `
             --clobber
 
   windows-assets:
@@ -239,6 +258,27 @@ jobs:
             }
           }
 
+      - name: Publish checksums
+        shell: pwsh
+        run: |
+          # SHA256SUMS is what the desktop and CLI updaters verify a
+          # download against; they refuse to install anything this file
+          # does not cover, so the step must not be skipped.
+          $assetDir = "build/bin"
+          $names = @(
+            "Exposely.exe",
+            "Exposely-amd64-installer.exe",
+            "exposely-cli.exe"
+          )
+
+          $lines = foreach ($name in $names) {
+            $path = Join-Path $assetDir $name
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name"
+          }
+
+          $lines | Out-File -FilePath "$assetDir/SHA256SUMS" -Encoding ascii
+
       - name: Create or update GitHub release
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -261,4 +301,5 @@ jobs:
             "build/bin/Exposely.exe" `
             "build/bin/Exposely-amd64-installer.exe" `
             "build/bin/exposely-cli.exe" `
+            "build/bin/SHA256SUMS" `
             --clobber

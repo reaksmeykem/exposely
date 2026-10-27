@@ -76,10 +76,12 @@ func writeServerBlock(b *strings.Builder, site SiteConfig, nginxRoot string) {
 	if listen <= 0 {
 		listen = 8090
 	}
-	serverName := strings.TrimSpace(site.ServerName)
-	if serverName == "" {
-		serverName = "localhost"
-	}
+	// server_name is written bare (nginx does not accept quotes here), so
+	// the value has to be a hostname: anything carrying `;`, a brace or a
+	// newline would append directives to the generated config. Entries are
+	// validated on the way into the registry; this fallback also covers a
+	// hand-edited sites.json.
+	serverName := SafeServerName(site.ServerName)
 	root := strings.TrimSpace(site.Root)
 	if root == "" {
 		root = "."

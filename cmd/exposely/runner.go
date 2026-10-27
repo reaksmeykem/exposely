@@ -21,6 +21,7 @@ import (
 
 	"github.com/reaksmeykem/exposely/internal/cloudflare"
 	"github.com/reaksmeykem/exposely/internal/localstack"
+	"github.com/reaksmeykem/exposely/internal/loopback"
 	"github.com/reaksmeykem/exposely/internal/models"
 	"github.com/reaksmeykem/exposely/internal/settings"
 	"github.com/reaksmeykem/exposely/internal/sysproc"
@@ -347,12 +348,11 @@ func (r *cliRunner) resolveProjectDirectory(projectPath string) (string, error) 
 }
 
 func (r *cliRunner) serveStaticDirectory(absPath string) (string, int, *http.Server, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// Loopback only: the tunnel dials 127.0.0.1, so a wildcard bind would
+	// only add LAN exposure for the served folder.
+	listener, err := loopback.Listen()
 	if err != nil {
-		listener, err = net.Listen("tcp", "0.0.0.0:0")
-		if err != nil {
-			return "", 0, nil, fmt.Errorf("failed to find a free port for static site: %w", err)
-		}
+		return "", 0, nil, fmt.Errorf("failed to find a free port for static site: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", port)

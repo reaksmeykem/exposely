@@ -54,8 +54,13 @@ func siteRegistryPath(appDataDir string) string {
 }
 
 // Upsert adds or replaces the entry for ServerName and persists the
-// registry.
+// registry. The server name is validated first: it is written verbatim
+// into the generated nginx.conf, so a value carrying `;`, a newline or a
+// brace would add directives rather than name a host.
 func (r *SiteRegistry) Upsert(entry SiteEntry) error {
+	if err := ValidateServerName(entry.ServerName); err != nil {
+		return err
+	}
 	entry.ServerName = strings.ToLower(strings.TrimSpace(entry.ServerName))
 	entry.UpdatedAt = nowRFC3339()
 	replaced := false

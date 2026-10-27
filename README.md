@@ -240,7 +240,11 @@ exposely share --start "npm run dev -- --port 5173"
 
 `share` runs in the foreground and keeps the tunnel alive until you stop it with `Ctrl+C`.
 
-`update` downloads the latest CLI release from GitHub and replaces the current executable on Windows.
+`update` downloads the latest CLI release from GitHub, verifies it against the
+`SHA256SUMS` asset published with that release, and only then replaces the
+current executable on Windows. If the release does not publish a checksum file
+the command stops instead of installing an unverified binary, and prints the
+releases page so you can install manually.
 
 Other useful commands:
 
@@ -307,8 +311,10 @@ The app ships with generic defaults intended to be changed in the UI before use:
 GitHub Actions runs:
 
 - `go test ./...`
-- frontend dependency install
-- frontend build
+- `go vet ./...`
+- frontend dependency install (`npm ci`) and build
+- `govulncheck` over the Go packages and `npm audit --audit-level=high` for the
+  frontend toolchain, in a separate `security` job
 
 See [.github/workflows/ci.yml](./.github/workflows/ci.yml).
 
@@ -319,6 +325,11 @@ When a GitHub release is published, GitHub Actions builds the Windows release as
 - `Exposely.exe`
 - `Exposely-amd64-installer.exe`
 - `exposely-cli.exe`
+- `SHA256SUMS` — SHA-256 digests of the three assets above, used by the
+  desktop and CLI updaters to verify a download before running it
+
+The macOS job publishes the same idea under `SHA256SUMS-macos` for its zip and
+CLI binary.
 
 The release workflow is defined in [.github/workflows/release.yml](./.github/workflows/release.yml).
 

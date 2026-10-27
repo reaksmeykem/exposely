@@ -10,11 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/reaksmeykem/exposely/internal/sysproc"
+	"github.com/reaksmeykem/exposely/internal/updateverify"
 )
 
 const cliReleaseAPI = "https://api.github.com/repos/" + cliRepoOwner + "/" + cliRepoName + "/releases/latest"
@@ -66,8 +66,36 @@ func (r *cliRunner) selfUpdate() error {
 		return fmt.Errorf("latest release %s does not contain %s", release.TagName, cliAssetName)
 	}
 
+	// Resolve the published digest before downloading. The CLI replaces
+	// its own executable with this file, so an unverifiable download must
+	// not be installed.
+	sumsURL := ""
+	for _, asset := range release.Assets {
+		if strings.EqualFold(strings.TrimSpace(asset.Name), updateverify.SumsAssetName) {
+			sumsURL = strings.TrimSpace(asset.URL)
+			break
+		}
+	}
+	if sumsURL == "" {
+		return fmt.Errorf("latest release %s does not publish %s, so %s cannot be verified — download it manually from %s",
+			release.TagName, updateverify.SumsAssetName, cliAssetName, cliReleasePage)
+	}
+
+	sums, err := updateverify.FetchSums(&http.Client{Timeout: 30 * time.Second}, sumsURL, "exposely-cli/"+cliVersion)
+	if err != nil {
+		return err
+	}
+	digest, err := updateverify.FindDigest(sums, cliAssetName)
+	if err != nil {
+		return err
+	}
+
 	tempPath := exePath + ".download"
 	if err := downloadFile(assetURL, tempPath); err != nil {
+		return err
+	}
+	if err := updateverify.VerifyFile(tempPath, cliAssetName, digest); err != nil {
+		_ = os.Remove(tempPath)
 		return err
 	}
 
@@ -108,7 +136,15 @@ func fetchLatestCLIRelease() (releaseInfo, error) {
 }
 
 func downloadFile(downloadURL, destination string) error {
-	client := &http.Client{Timeout: 0}
+	// A stalled transfer used to hang `exposely update` forever: the client
+	// timeout bounds the whole request (headers plus body) and the transport
+	// bounds the wait for the first byte.
+	client := &http.Client{
+		Timeout: 15 * time.Minute,
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+	}
 	req, err := http.NewRequest(http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
@@ -147,8 +183,8 @@ func launchWindowsReplace(parentPID int, targetPath, downloadedPath string) erro
 }
 
 func buildWindowsReplaceScript(parentPID int, targetPath, downloadedPath string) string {
-	escapedTarget := strconv.Quote(targetPath)
-	escapedDownloaded := strconv.Quote(downloadedPath)
+	escapedTarget := sysproc.PowerShellLiteral(targetPath)
+	escapedDownloaded := sysproc.PowerShellLiteral(downloadedPath)
 
 	return fmt.Sprintf(`$ErrorActionPreference = 'SilentlyContinue'
 $parentPID = %d

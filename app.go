@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,11 +28,13 @@ import (
 	"github.com/reaksmeykem/exposely/internal/cloudflare"
 	applicense "github.com/reaksmeykem/exposely/internal/license"
 	"github.com/reaksmeykem/exposely/internal/localstack"
+	"github.com/reaksmeykem/exposely/internal/loopback"
 	"github.com/reaksmeykem/exposely/internal/models"
 	"github.com/reaksmeykem/exposely/internal/settings"
 	"github.com/reaksmeykem/exposely/internal/stacks"
 	"github.com/reaksmeykem/exposely/internal/sysproc"
 	"github.com/reaksmeykem/exposely/internal/terminal"
+	"github.com/reaksmeykem/exposely/internal/updateverify"
 	"github.com/reaksmeykem/exposely/internal/version"
 )
 
@@ -223,11 +224,46 @@ func (a *App) stackMySQLDataDir() string {
 
 // StackStatus reports the current state of the Exposely-managed stack
 // services. Safe to call before any service is configured.
+//
+// Status is reconciled against the machine first: a service this process
+// did not start (one left behind by a previous instance — an in-place
+// update, a crash, a force-killed window) is adopted, and a port owned by
+// a different program is reported as an error. Without that the panel
+// claims everything is stopped while mysqld is serving 3306, and the only
+// way to find out why is to click Start and read the failure.
 func (a *App) StackStatus() []stacks.Status {
 	if a.stacks == nil {
 		return []stacks.Status{}
 	}
+	a.reconcileStackStatus()
 	return a.stacks.AllStatus()
+}
+
+// reconcileStackStatus aligns the manager with what is actually running.
+// Cheap for services that are already tracked: only the not-running ones
+// cost a port lookup.
+func (a *App) reconcileStackStatus() {
+	settingsValue, err := a.store.Load()
+	if err != nil {
+		return
+	}
+	for _, service := range []stacks.Service{stacks.ServiceNginx, stacks.ServicePHP, stacks.ServiceMySQL} {
+		if a.stacks.Status(service).Running {
+			continue
+		}
+		// Nothing configured means nothing to look for; the UI reports it
+		// as stopped until the user sets a binary path.
+		if strings.TrimSpace(a.stacksConfiguredBinary(settingsValue, service)) == "" {
+			continue
+		}
+		port := a.stackServicePort(settingsValue, service)
+		if port <= 0 {
+			continue
+		}
+		if adopted, conflict := a.adoptStackServiceIfRunning(settingsValue, service, port); !adopted && conflict != nil {
+			a.stacks.SetLastError(service, conflict.Error())
+		}
+	}
 }
 
 // StartStackService starts one of "nginx", "php", or "mysql". For mysql
@@ -516,18 +552,44 @@ func (a *App) adoptStackServiceIfRunning(settingsValue models.AppSettings, servi
 	}
 	configured := strings.TrimSpace(a.stacksConfiguredBinary(settingsValue, service))
 	if configured != "" && a.processIsConfiguredBinary(pid, configured) {
-		if status := a.stacks.Adopt(service, pid); status.Running {
+		// The listener is not always the process that owns the service:
+		// nginx's worker holds the sockets while its master owns the life
+		// cycle, and killing only the worker makes the master respawn it.
+		// Adopt the top-most ancestor that is the same binary.
+		owner := a.serviceOwnerPID(pid, configured)
+		if status := a.stacks.Adopt(service, owner); status.Running {
 			a.pushLog(models.LogEntry{
 				Timestamp: nowStamp(),
 				Source:    "stack",
 				Level:     "info",
-				Message:   fmt.Sprintf("%s was already running (pid %d, port %d) — reattached", service, pid, port),
+				Message:   fmt.Sprintf("%s was already running (pid %d, port %d) — reattached", service, owner, port),
 			})
 			return true, nil
 		}
 		return false, nil
 	}
 	return false, a.stackPortConflictError(service, port, pid)
+}
+
+// serviceOwnerPID walks up from a process that holds a service port to
+// the ancestor that owns the service, as long as every step is the same
+// executable. nginx: worker (listening) → master (stops the service).
+// mysqld and php-cgi listen in the process that also owns their life
+// cycle, so they stay as they are. The walk is depth-limited so a
+// recycled parent pid can never send it in circles.
+func (a *App) serviceOwnerPID(pid int, configured string) int {
+	owner := pid
+	for depth := 0; depth < 4; depth++ {
+		parent, err := sysproc.ParentPID(owner)
+		if err != nil || parent <= 0 || parent == owner {
+			break
+		}
+		if !a.processIsConfiguredBinary(parent, configured) {
+			break
+		}
+		owner = parent
+	}
+	return owner
 }
 
 func (a *App) processIsConfiguredBinary(pid int, binaryPath string) bool {
@@ -545,15 +607,29 @@ func (a *App) processIsConfiguredBinary(pid int, binaryPath string) bool {
 	return strings.EqualFold(filepath.Clean(actual), filepath.Clean(expected))
 }
 
+// stackPortConflictError explains a start that cannot happen because
+// another program owns the port. The owner is named with its full path:
+// this machine has more than one mysqld (EnvKit ships its own), and a bare
+// "mysqld.exe" otherwise reads as Exposely complaining about its own
+// service.
 func (a *App) stackPortConflictError(service stacks.Service, port, pid int) error {
-	owner := ""
-	if path, err := sysproc.ProcessExecutablePath(pid); err == nil && strings.TrimSpace(path) != "" {
-		owner = filepath.Base(path)
+	ownerPath, err := sysproc.ProcessExecutablePath(pid)
+	ownerPath = strings.TrimSpace(ownerPath)
+	if err != nil {
+		ownerPath = ""
 	}
-	if owner == "" {
-		owner = "another process"
+
+	owner := "another process"
+	if ownerPath != "" {
+		owner = filepath.Base(ownerPath)
 	}
-	return fmt.Errorf("%s cannot start: port %d is already in use by %s (PID %d). Stop that process or change the %s port in Settings", service, port, owner, pid, service)
+
+	advice := fmt.Sprintf("Stop that process or change the %s port in Settings", service)
+	if ownerPath != "" {
+		return fmt.Errorf("%s cannot start: port %d is already in use by %s (PID %d) at %s — not the copy Exposely manages. %s",
+			service, port, owner, pid, ownerPath, advice)
+	}
+	return fmt.Errorf("%s cannot start: port %d is already in use by %s (PID %d). %s", service, port, owner, pid, advice)
 }
 
 func (a *App) stackServicePort(settingsValue models.AppSettings, service stacks.Service) int {
@@ -711,6 +787,21 @@ func (a *App) InstallLatestUpdate() (string, error) {
 
 	downloadPath, err := a.downloadReleaseAsset(latest.TagName, asset)
 	if err != nil {
+		return "", err
+	}
+
+	// Verify the download against the release's published SHA-256 before
+	// anything is executed from it: this file either replaces Exposely.exe
+	// or is launched as the installer, so a corrupted or swapped payload
+	// must not reach that point.
+	if err := verifyReleaseAsset(latest, asset, downloadPath); err != nil {
+		_ = os.Remove(downloadPath)
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    "updater",
+			Level:     "error",
+			Message:   fmt.Sprintf("Update verification failed: %v", err),
+		})
 		return "", err
 	}
 
@@ -1329,12 +1420,12 @@ func detectStaticSiteDir(projectDir string) (string, bool) {
 }
 
 func (a *App) serveStaticDirectory(absPath string) (string, int, *http.Server, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// Loopback only: the tunnel dials 127.0.0.1, so nothing is gained by
+	// binding a wildcard address, which would put the shared folder on the
+	// local network for anyone to read.
+	listener, err := loopback.Listen()
 	if err != nil {
-		listener, err = net.Listen("tcp", "0.0.0.0:0")
-		if err != nil {
-			return "", 0, nil, fmt.Errorf("failed to find a free port for static site: %w", err)
-		}
+		return "", 0, nil, fmt.Errorf("failed to find a free port for static site: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -3466,6 +3557,40 @@ func fetchLatestReleaseInfo() (githubLatestRelease, error) {
 	return release, nil
 }
 
+// findReleaseAssetURL returns the download URL of a named asset in a
+// release, or an empty string when the release does not carry it.
+func findReleaseAssetURL(release githubLatestRelease, name string) string {
+	for _, asset := range release.Assets {
+		if strings.EqualFold(strings.TrimSpace(asset.Name), name) {
+			return strings.TrimSpace(asset.BrowserDownloadURL)
+		}
+	}
+	return ""
+}
+
+// verifyReleaseAsset checks a downloaded update file against the SHA-256
+// digest the release publishes in its SHA256SUMS asset. Verification is
+// required: a release without the file (or without an entry for the asset)
+// is treated as unverifiable, because the alternative is running an
+// unverified binary.
+func verifyReleaseAsset(release githubLatestRelease, asset githubReleaseAsset, path string) error {
+	sumsURL := findReleaseAssetURL(release, updateverify.SumsAssetName)
+	if sumsURL == "" {
+		return fmt.Errorf("release %s does not publish %s, so %s cannot be verified — install it manually from %s",
+			release.TagName, updateverify.SumsAssetName, asset.Name, version.ReleasePageURL)
+	}
+
+	sums, err := updateverify.FetchSums(&http.Client{Timeout: 30 * time.Second}, sumsURL, "exposely-ui/"+version.Version)
+	if err != nil {
+		return err
+	}
+	digest, err := updateverify.FindDigest(sums, asset.Name)
+	if err != nil {
+		return err
+	}
+	return updateverify.VerifyFile(path, asset.Name, digest)
+}
+
 func selectDesktopUpdateAsset(release githubLatestRelease) (githubReleaseAsset, error) {
 	preferredNames := []string{
 		"Exposely-amd64-installer.exe",
@@ -3565,7 +3690,7 @@ func launchExecutable(path string) error {
 }
 
 func buildWindowsStartProcessScript(path string) string {
-	return fmt.Sprintf("Start-Process -FilePath %s", strconv.Quote(path))
+	return fmt.Sprintf("Start-Process -FilePath %s", sysproc.PowerShellLiteral(path))
 }
 
 func (a *App) currentUpdateInfo() models.UpdateInfo {
@@ -3707,8 +3832,8 @@ func launchWindowsReplace(parentPID int, targetPath, downloadedPath string) erro
 }
 
 func buildWindowsReplaceScript(parentPID int, targetPath, downloadedPath string) string {
-	escapedTarget := strconv.Quote(targetPath)
-	escapedDownloaded := strconv.Quote(downloadedPath)
+	escapedTarget := sysproc.PowerShellLiteral(targetPath)
+	escapedDownloaded := sysproc.PowerShellLiteral(downloadedPath)
 
 	return fmt.Sprintf(`$ErrorActionPreference = 'SilentlyContinue'
 $parentPID = %d

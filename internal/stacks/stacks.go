@@ -77,6 +77,9 @@ type Manager struct {
 	configs  map[Service]ServiceConfig
 	procs    map[Service]*managedProc
 	logLimit int
+	// backoff paces auto-restart after a crash; tests replace it with a
+	// compressed schedule so they do not depend on wall-clock seconds.
+	backoff restartBackoff
 }
 
 // managedProc wraps a running child process plus its metadata.
@@ -115,6 +118,7 @@ func NewManager() *Manager {
 		configs:  make(map[Service]ServiceConfig),
 		procs:    make(map[Service]*managedProc),
 		logLimit: 200,
+		backoff:  defaultRestartBackoff(),
 	}
 }
 
@@ -201,15 +205,49 @@ func (m *Manager) startLocked(service Service, failures int) Status {
 	return m.statusLocked(service)
 }
 
-// restartBackoff caps how fast and how often a crash-looping service is
-// relaunched: 1s, 2s, 4s, 8s, then 8s forever. A service that stayed up
-// longer than stableAfter resets the counter, so one bad request (PHP
-// fatal error) recovers in ~1s while a broken binary does not spin.
-const (
-	firstRestartDelay = 1 * time.Second
-	maxRestartDelay   = 8 * time.Second
-	stableAfter       = 30 * time.Second
-)
+// restartBackoff controls how fast and how often a crash-looping service is
+// relaunched, and when the supervisor gives up.
+type restartBackoff struct {
+	// first is the delay after the first crash. It doubles with every
+	// further consecutive failure until it reaches max.
+	first time.Duration
+	// max caps the exponential growth and is the steady-state delay.
+	max time.Duration
+	// maxFailures is how many consecutive crashes are tolerated before
+	// auto-restart pauses and asks the user to fix the cause.
+	maxFailures int
+	// stable is the uptime that counts as a fresh start: a service that
+	// stayed up at least this long resets the failure counter, so one
+	// bad request (PHP fatal error) recovers in ~1s while a broken
+	// binary does not spin.
+	stable time.Duration
+}
+
+// defaultRestartBackoff is the production schedule: 1s, 2s, 4s, 8s, 8s,
+// then 8s; the seventh consecutive crash pauses the supervisor. Tests
+// shrink it so they never depend on wall-clock seconds.
+func defaultRestartBackoff() restartBackoff {
+	return restartBackoff{
+		first:       1 * time.Second,
+		max:         8 * time.Second,
+		maxFailures: 6,
+		stable:      30 * time.Second,
+	}
+}
+
+// delayFor returns how long to wait before the next relaunch after
+// failures consecutive crashes: 1s, 2s, 4s, then max (failures < 1 is
+// treated as the first crash).
+func (b restartBackoff) delayFor(failures int) time.Duration {
+	delay := b.first
+	for i := 1; i < failures && delay < b.max; i++ {
+		delay *= 2
+	}
+	if delay > b.max {
+		delay = b.max
+	}
+	return delay
+}
 
 // supervise waits for the child to exit and, when the user still wants
 // the service running, relaunches it after a backoff. Each relaunch
@@ -219,6 +257,7 @@ func (m *Manager) supervise(service Service, proc *managedProc, failures int) {
 	close(proc.done)
 
 	m.mu.Lock()
+	backoff := m.backoff
 	// Superseded by a newer generation (restart raced a Stop/SetConfig)?
 	if m.procs[service] != proc {
 		m.mu.Unlock()
@@ -233,12 +272,12 @@ func (m *Manager) supervise(service Service, proc *managedProc, failures int) {
 	}
 
 	// Unexpected exit while desired: backoff and relaunch.
-	if waitErr == nil || time.Since(proc.startedAt) >= stableAfter {
+	if waitErr == nil || time.Since(proc.startedAt) >= backoff.stable {
 		failures = 0
 	} else {
 		failures++
 	}
-	if failures > 6 {
+	if failures > backoff.maxFailures {
 		delete(m.procs, service)
 		m.setStatus(service, false, fmt.Sprintf(
 			"%s exited %d times in a row — auto-restart paused. Fix the cause (check logs), then start it again",
@@ -246,10 +285,7 @@ func (m *Manager) supervise(service Service, proc *managedProc, failures int) {
 		m.mu.Unlock()
 		return
 	}
-	delay := firstRestartDelay << failures
-	if delay > maxRestartDelay {
-		delay = maxRestartDelay
-	}
+	delay := backoff.delayFor(failures)
 	m.setStatus(service, false, fmt.Sprintf("%s exited unexpectedly — restarting in %s (attempt %d)", service, delay, failures+1))
 	m.mu.Unlock()
 
@@ -409,6 +445,25 @@ func (m *Manager) statusLocked(service Service) Status {
 		StartedAt: startedAt,
 		LastError: p.lastError,
 	}
+}
+
+// SetLastError records a message against a service that is not running,
+// so callers that discover a blocked start — a port owned by another
+// program, say — can explain it in Status instead of leaving the UI with
+// a bare "stopped". The state of a live child is never overwritten.
+func (m *Manager) SetLastError(service Service, errMsg string) Status {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if p, ok := m.procs[service]; ok && p != nil {
+		if p.alive() {
+			return m.statusLocked(service)
+		}
+		p.lastError = errMsg
+		return m.statusLocked(service)
+	}
+	m.procs[service] = &managedProc{lastError: errMsg}
+	return m.statusLocked(service)
 }
 
 // setStatus records a transition (including an error) and returns it.

@@ -7,6 +7,9 @@ on:
       - master
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: windows-latest
@@ -28,7 +31,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Build frontend
         working-directory: frontend
@@ -36,3 +39,37 @@ jobs:
 
       - name: Run Go tests
         run: go test ./...
+
+      - name: Run Go static analysis
+        run: go vet ./...
+
+  security:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Reports Go dependencies whose published vulnerabilities this code
+      # actually reaches; the updaters run with the user's privileges, so a
+      # known-bad dependency must fail the build rather than ship.
+      - name: Scan Go dependencies for known vulnerabilities
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The frontend is bundled into the desktop binary, so advisories in the
+      # build toolchain are worth failing on.
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high
