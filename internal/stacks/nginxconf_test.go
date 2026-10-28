@@ -20,7 +20,7 @@ func TestRenderNginxConfStaticSite(t *testing.T) {
 		Index:      []string{"index.html"},
 	}})
 	for _, want := range []string{
-		"listen       8090;",
+		"listen       127.0.0.1:8090;",
 		"server_name  app.test;",
 		`root         D:/code/site/public`,
 		"include       C:/nginx/conf/mime.types;",

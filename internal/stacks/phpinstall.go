@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -19,25 +20,46 @@ import (
 // PHPVersion is the default PHP release Exposely installs when the user
 // asks for a managed PHP. Thread-Safe, x64 build (required for stable
 // FastCGI worker processes).
-const PHPVersion = "8.4.25"
+//
+// 8.5 is the newest supported branch (active support through 2027, security
+// fixes through 2029). 8.4 still gets active support until the end of 2026.
+const PHPVersion = "8.5.12"
 
 // PHPInstallableVersions lists the PHP releases windows.php.net serves
-// today (verified HTTP 200 through the phpDownloadURLs fallback chain).
-// 8.1–8.3 ship as vs16 builds, 8.4+ as vs17; the URL list handles both.
-// The InstallPHPVersion handler also accepts any other x.y.z so newer
-// patches keep working without a code change.
-var PHPInstallableVersions = []string{"8.1.34", "8.2.33", "8.3.33", "8.4.25", "8.5.10"}
+// today (verified through the phpDownloadURLs fallback chain, Oct 2026).
+//
+// 8.1 is intentionally no longer offered: it reached end-of-life and gets
+// no security fixes. 8.2 is security-only and EOL at the end of 2026.
+// Users can still install an older x.y.z by typing it, but the default path
+// should not lead to an unsupported runtime.
+var PHPInstallableVersions = []string{"8.2.35", "8.3.36", "8.4.27", "8.5.12"}
 
 // phpDownloadURLs lists candidate URLs for a PHP release in priority
 // order: current releases first, then the archives folder where
 // superseded versions are moved. The first URL that downloads wins.
+//
+// Windows security rebuilds carry a "-1" suffix (for example
+// php-8.5.12-1-Win32-vs17-x64.zip) and are the only packages that contain
+// the fixed dependencies. The 26 Oct 2026 rebuilds ship Brotli 1.2.1 for
+// CVE-2026-111497 (out-of-bounds write reachable through cURL response
+// decompression); the plain -Win32 filename does not exist for those
+// releases, so both spellings must be tried.
 func phpDownloadURLs(version string) []string {
-	return []string{
-		fmt.Sprintf("https://windows.php.net/downloads/releases/php-%s-Win32-vs17-x64.zip", version),
-		fmt.Sprintf("https://windows.php.net/downloads/releases/php-%s-Win32-vs16-x64.zip", version),
-		fmt.Sprintf("https://windows.php.net/downloads/releases/archives/php-%s-Win32-vs17-x64.zip", version),
-		fmt.Sprintf("https://windows.php.net/downloads/releases/archives/php-%s-Win32-vs16-x64.zip", version),
+	base := "https://windows.php.net/downloads/releases/"
+	archive := base + "archives/"
+	names := []string{
+		"php-%s-Win32-vs17-x64.zip",
+		"php-%s-1-Win32-vs17-x64.zip",
+		"php-%s-Win32-vs16-x64.zip",
+		"php-%s-1-Win32-vs16-x64.zip",
 	}
+	urls := make([]string, 0, len(names)*2)
+	for _, dir := range []string{base, archive} {
+		for _, name := range names {
+			urls = append(urls, dir+fmt.Sprintf(name, version))
+		}
+	}
+	return urls
 }
 
 // PHPInstallDir returns the legacy managed-PHP root (the pre
@@ -206,6 +228,9 @@ func InstallPHPVersion(appDataDir, version string) (string, string, error) {
 		iniPath := PhpIniPath(dir)
 		if _, err := os.Stat(iniPath); err == nil {
 			_ = EnsurePHPIniCASettings(iniPath, dir)
+			// Existing installs keep their php.ini; repair the security
+			// keys instead of leaving an old file in place.
+			_, _ = HardenPHPIni(iniPath)
 		}
 		return dir, iniPath, nil
 	}
@@ -523,9 +548,9 @@ func PHPIniTemplateWith(phpDir string, s PHPIniSettings) string {
 		fmt.Fprintf(&b, "; openssl.cafile = %s\n", quoteIniPath(caPath))
 	}
 
-	memory := iniOr(s.MemoryLimit, "256M")
-	upload := iniOr(s.UploadMaxFilesize, "64M")
-	post := iniOr(s.PostMaxSize, "64M")
+	memory := sanitizeIniSize(s.MemoryLimit, "256M")
+	upload := sanitizeIniSize(s.UploadMaxFilesize, "64M")
+	post := sanitizeIniSize(s.PostMaxSize, "64M")
 	execTime := s.MaxExecutionTime
 	if execTime <= 0 {
 		execTime = 120
@@ -543,8 +568,18 @@ func PHPIniTemplateWith(phpDir string, s PHPIniSettings) string {
 	fmt.Fprintf(&b, "log_errors = On\n")
 	fmt.Fprintf(&b, "error_log = %s\n", quoteIniPath(filepath.Join(phpDir, "php_errors.log")))
 	fmt.Fprintf(&b, "cgi.force_redirect = 0\n")
-	fmt.Fprintf(&b, "cgi.fix_pathinfo = 1\n")
+	// fix_pathinfo=1 is the classic nginx/PHP path-info RCE enabler; the
+	// generated nginx.conf also guards it, but defence in depth.
+	fmt.Fprintf(&b, "cgi.fix_pathinfo = 0\n")
 	fmt.Fprintf(&b, "fastcgi.impersonate = 1\n")
+
+	fmt.Fprintf(&b, "\n; Security defaults\n")
+	// Do not advertise the exact PHP build in the X-Powered-By header:
+	// scanners use it to pick an exploit for a known patch level.
+	fmt.Fprintf(&b, "expose_php = Off\n")
+	fmt.Fprintf(&b, "allow_url_include = Off\n")
+	fmt.Fprintf(&b, "session.cookie_httponly = 1\n")
+	fmt.Fprintf(&b, "session.use_strict_mode = 1\n")
 
 	fmt.Fprintf(&b, "\n; Timezone (override by hand if needed)\n")
 	fmt.Fprintf(&b, "date.timezone = UTC\n")
@@ -571,6 +606,81 @@ func PHPIniTemplateWith(phpDir string, s PHPIniSettings) string {
 	}
 
 	return b.String()
+}
+
+var phpSizePattern = regexp.MustCompile(`^[0-9]+[KMG]?$`)
+
+// sanitizeIniSize accepts only a plain php.ini size ("256M", "1G", "512K").
+// A value carrying a newline would append arbitrary directives to the
+// generated php.ini, and anything unparsable would stop PHP from booting.
+func sanitizeIniSize(value, fallback string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	if phpSizePattern.MatchString(normalized) {
+		return normalized
+	}
+	return fallback
+}
+
+// HardenPHPIni applies the security-relevant directives to an existing
+// php.ini without touching any other setting. Installs made before these
+// defaults existed (and versions upgraded in place) keep a php.ini with
+// cgi.fix_pathinfo = 1 and no expose_php line; fixing only those keys is
+// safe for user tuning elsewhere. Returns true when the file was changed.
+func HardenPHPIni(iniPath string) (bool, error) {
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	content := string(data)
+	for _, kv := range [][2]string{
+		{"cgi.fix_pathinfo", "0"},
+		{"expose_php", "Off"},
+		{"allow_url_include", "Off"},
+		{"session.cookie_httponly", "1"},
+		{"session.use_strict_mode", "1"},
+	} {
+		content = setIniDirective(content, kv[0], kv[1])
+	}
+
+	if content == string(data) {
+		return false, nil
+	}
+	return true, WriteFile(iniPath, content)
+}
+
+// setIniDirective rewrites each active `key = value` line, or appends the
+// key when the file has no active line for it. Commented-out examples are
+// left alone.
+func setIniDirective(content, key, value string) string {
+	lines := strings.Split(content, "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		name, rest, ok := strings.Cut(trimmed, "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), key) {
+			continue
+		}
+		found = true
+		if strings.EqualFold(strings.TrimSpace(rest), value) {
+			continue
+		}
+		lines[i] = key + " = " + value
+	}
+	if found {
+		return strings.Join(lines, "\n")
+	}
+
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return content + key + " = " + value + "\n"
 }
 
 func iniOr(value, fallback string) string {

@@ -629,7 +629,7 @@ function renderTerminalSection(project: ProjectPreset): string {
         <label class="wide">${t('terminalCommand')}
           <input name="terminalCommand" value="${escapeHtml(state.terminalCommand)}" placeholder="npm run dev" spellcheck="false" autocomplete="off" />
         </label>
-        <button type="submit" ${state.terminalRunning ? 'disabled' : ''}>${t('terminalRun')}</button>
+        <button type="submit" ${state.terminalRunning || state.terminalStarting ? 'disabled' : ''}>${t('terminalRun')}</button>
         <button type="button" class="danger-button" data-action="terminal-stop" ${state.terminalRunning ? '' : 'disabled'}>${t('stop')}</button>
         <button type="button" class="secondary" data-action="terminal-clear">${t('terminalClear')}</button>
       </form>
@@ -672,6 +672,11 @@ async function runTerminalCommand() {
   const input = root.querySelector<HTMLInputElement>('#terminal-command-form input[name=terminalCommand]');
   const command = (input?.value ?? state.terminalCommand).trim();
   if (!command) return;
+
+  // Guarded here as well as in the button: pressing Enter twice in the
+  // command field used to start two sessions (the second usually errored
+  // and desynced the panel from the real process).
+  if (state.terminalStarting) return;
 
   state.terminalCommand = command;
   state.terminalProjectId = project.id;
@@ -742,14 +747,24 @@ let lastRenderedTab: string | null = null;
 // while every event still lands in state immediately.
 const EVENT_RENDER_INTERVAL_MS = 150;
 let eventRenderTimer: number | null = null;
+let phpVersionsRequested = false;
 
 function scheduleEventRender() {
-  if (eventRenderTimer !== null) return;
+  // State still updates while the window is minimised or occluded; the full
+  // page rebuild (up to 2000 terminal lines) waits until it is visible.
+  // The visibilitychange listener below renders once when the user returns.
+  if (eventRenderTimer !== null || document.hidden) return;
   eventRenderTimer = window.setTimeout(() => {
     eventRenderTimer = null;
     render();
   }, EVENT_RENDER_INTERVAL_MS);
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state.appState) {
+    render();
+  }
+});
 
 // captureMainScroll returns the current scrollTop of the .main-content
 // container, or 0 if the page is still loading or hasn't been laid out yet.
@@ -933,7 +948,7 @@ function render(options: { refreshProjectForm?: boolean } = {}) {
         <section class="hero-card" style="border-color: var(--danger);">
           <h1 style="color: var(--danger);">${t('initError')}</h1>
           <p>${escapeHtml(state.fatalError)}</p>
-          <button type="button" onclick="window.location.reload()" style="margin-top: 20px;">${t('reloadApp')}</button>
+          <button type="button" data-action="reload-app" style="margin-top: 20px;">${t('reloadApp')}</button>
         </section>
       </main>
     `;
@@ -1815,7 +1830,14 @@ function syncEditorFromForm() {
   };
 }
 
+// A double-click on Start/Share/Install used to run the same backend action
+// twice, and "stop then start" handlers could tear down the tunnel the other
+// call had just started. One action at a time is enough here.
+let actionInFlight = false;
+
 async function withAction<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
+  if (actionInFlight) return undefined;
+  actionInFlight = true;
   try {
     setBusy(label);
     const result = await fn();
@@ -1826,6 +1848,7 @@ async function withAction<T>(label: string, fn: () => Promise<T>): Promise<T | u
     setNotice('error', message);
     return undefined;
   } finally {
+    actionInFlight = false;
     setBusy(null);
   }
 }
@@ -1940,9 +1963,12 @@ function bindForms() {
     }
   });
 
-  // Reload the PHP versions panel whenever the settings view renders.
-  const settingsRoot = root.querySelector('#settings-view, main, body') ?? root;
-  if (!state.phpVersions) {
+  // Fetch the PHP version list once. bindForms() runs at the end of every
+  // render (several times a second during a tunnel), so retrying here on
+  // every render used to hammer the backend whenever the call failed or the
+  // binding was unavailable.
+  if (!state.phpVersions && !phpVersionsRequested) {
+    phpVersionsRequested = true;
     void api.listPHPVersions().then((pv) => {
       state.phpVersions = pv;
       if (state.activeTab === 'settings') {
@@ -1950,7 +1976,6 @@ function bindForms() {
       }
     }).catch(() => {});
   }
-  void settingsRoot;
 
   const stackForm = root.querySelector<HTMLFormElement>('#stack-form');
   stackForm?.addEventListener('submit', async (event) => {
@@ -2044,12 +2069,17 @@ function bindForms() {
 
 async function handleAction(action: string, id: string | null, sourceEl: HTMLElement | null = null) {
   switch (action) {
+    case 'reload-app':
+      window.location.reload();
+      return;
     case 'toggle-lang': {
       const newLang = getLang() === 'en' ? 'km' : 'en';
       setLang(newLang);
       if (state.appState) {
         state.appState.settings.language = newLang;
-        api.saveSettings(state.appState.settings);
+        void api.saveSettings(state.appState.settings).catch((error) => {
+          setNotice('error', error instanceof Error ? error.message : String(error));
+        });
       }
       render();
       return;
@@ -2064,7 +2094,9 @@ async function handleAction(action: string, id: string | null, sourceEl: HTMLEle
       setTheme(newTheme);
       if (state.appState) {
         state.appState.settings.theme = newTheme;
-        api.saveSettings(state.appState.settings);
+        void api.saveSettings(state.appState.settings).catch((error) => {
+          setNotice('error', error instanceof Error ? error.message : String(error));
+        });
       }
       render();
       return;
@@ -2786,4 +2818,18 @@ window.addEventListener('error', (event) => {
   }
 });
 
-bootstrap();
+// Fire-and-forget backend calls used to fail silently (blocked clipboard,
+// failed settings save) with no trace in the UI. Surface them.
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection:', event.reason);
+  if (state.appState) {
+    const message = event.reason instanceof Error ? event.reason.message : String(event.reason);
+    setNotice('error', message);
+  }
+});
+
+void bootstrap().catch((error) => {
+  console.error('Bootstrap failed:', error);
+  state.fatalError = error instanceof Error ? error.message : String(error);
+  render();
+});

@@ -68,6 +68,33 @@ func ProcessAlive(pid int) bool {
 	return strings.Contains(string(out), strconv.Itoa(pid))
 }
 
+// ProcessMatches reports whether pid's executable image is exePath. A PID
+// recorded in a stale pid file can be recycled by an unrelated process
+// after a crash or reboot; callers use this to refuse to kill (or adopt)
+// something that is not the configured service binary.
+func ProcessMatches(pid int, exePath string) bool {
+	if pid <= 0 {
+		return false
+	}
+	exePath = strings.TrimSpace(exePath)
+	if exePath == "" {
+		return false
+	}
+	actual, err := sysproc.ProcessExecutablePath(pid)
+	if err != nil {
+		return false
+	}
+	actualAbs, err := filepath.Abs(actual)
+	if err != nil {
+		return false
+	}
+	wantAbs, err := filepath.Abs(exePath)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(actualAbs), filepath.Clean(wantAbs))
+}
+
 // KillPID terminates a process tree by PID (matching how the rest of
 // Exposely stops children with taskkill /T /F).
 func KillPID(pid int) error {

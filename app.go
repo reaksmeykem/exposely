@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -63,6 +64,7 @@ type App struct {
 	updateInfo        models.UpdateInfo
 	localStackMu      sync.RWMutex
 	localStack        localstack.Info
+	localStackAt      time.Time
 	stacks            *stacks.Manager
 }
 
@@ -88,6 +90,7 @@ func NewApp() (*App, error) {
 	}
 	app.manager = cloudflare.NewManager(app.configPath, app.pushLog, app.pushStatus)
 	app.localStack = localstack.Detect()
+	app.localStackAt = time.Now()
 	app.stacks = stacks.NewManager()
 	app.terminal = &terminal.Runner{}
 	return app, nil
@@ -174,6 +177,13 @@ func (a *App) applyStackConfigs(settingsValue models.AppSettings) {
 	}
 
 	if strings.TrimSpace(stack.PHPCGIBinaryPath) != "" {
+		// Repair the php.ini of Exposely's own PHP installs: versions that
+		// were installed before the security defaults existed still carry
+		// cgi.fix_pathinfo = 1 and advertise the build via expose_php.
+		if stack.UseManagedPHP {
+			dir := stacks.ActivePHPDirFor(a.appDataDir, stack.ManagedPHPVersion)
+			_, _ = stacks.HardenPHPIni(stacks.PhpIniPath(dir))
+		}
 		a.stacks.SetConfig(stacks.ServicePHP, stacks.ServiceConfig{
 			BinaryPath: stack.PHPCGIBinaryPath,
 			Args:       stacks.PHPStartArgs(stack.EffectivePHPPort(), stack.EffectivePHPWorkers()),
@@ -483,10 +493,25 @@ func (a *App) StopStack() (models.AppState, error) {
 // result on the app. Callers use this from share flows so newly-installed
 // stacks (EnvKit / Herd / Valet / Laragon / generic HTTPS:443 listener)
 // are picked up without restarting Exposely.
+// localStackDetectTTL bounds how often localstack.Detect runs. Detection
+// shells out to `reg query` once per uninstall entry (about a second on a
+// normal Windows machine), and RefreshState runs after every action, so
+// re-detecting on each call made every save feel slow.
+const localStackDetectTTL = 20 * time.Second
+
 func (a *App) refreshLocalStack() localstack.Info {
+	a.localStackMu.RLock()
+	cached := a.localStack
+	cachedAt := a.localStackAt
+	a.localStackMu.RUnlock()
+	if !cachedAt.IsZero() && time.Since(cachedAt) < localStackDetectTTL {
+		return cached
+	}
+
 	info := localstack.Detect()
 	a.localStackMu.Lock()
 	a.localStack = info
+	a.localStackAt = time.Now()
 	a.localStackMu.Unlock()
 	return info
 }
@@ -1402,6 +1427,22 @@ func (a *App) resolveProjectDirectory(projectPath string) (string, error) {
 	return absPath, nil
 }
 
+// isSensitiveStaticPath reports whether a URL path would expose files that
+// belong to the project rather than the site: VCS metadata, dotfiles such as
+// .env, and source maps. .well-known is allowed because ACME and similar
+// flows serve it intentionally.
+func isSensitiveStaticPath(urlPath string) bool {
+	for _, part := range strings.Split(urlPath, "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		if strings.HasPrefix(part, ".") && !strings.EqualFold(part, ".well-known") {
+			return true
+		}
+	}
+	return strings.HasSuffix(strings.ToLower(urlPath), ".map")
+}
+
 func detectStaticSiteDir(projectDir string) (string, bool) {
 	candidates := []string{
 		projectDir,
@@ -1430,30 +1471,63 @@ func (a *App) serveStaticDirectory(absPath string) (string, int, *http.Server, e
 	port := listener.Addr().(*net.TCPAddr).Port
 	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
+	// Every line here is forwarded to the WebView event stream. A shared
+	// folder sits behind a public URL and can be hit by scanners or real
+	// traffic, so log a sample instead of one event per request.
+	var logMu sync.Mutex
+	var lastRequestLog time.Time
+	logRequest := func(entry models.LogEntry) {
+		logMu.Lock()
+		tooSoon := time.Since(lastRequestLog) < 500*time.Millisecond
+		if !tooSoon {
+			lastRequestLog = time.Now()
+		}
+		logMu.Unlock()
+		if !tooSoon {
+			a.pushLog(entry)
+		}
+	}
+
+	fileServer := http.FileServer(http.Dir(absPath))
 	server := &http.Server{
+		// Deadlines so a slow or stalled client (possibly the whole
+		// internet, via the tunnel) cannot pin a connection forever.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			a.pushLog(models.LogEntry{
+			logRequest(models.LogEntry{
 				Timestamp: nowStamp(),
 				Source:    "html-server",
 				Level:     "info",
 				Message:   fmt.Sprintf("Request: %s %s from %s [Host: %s]", r.Method, r.URL.Path, r.RemoteAddr, r.Host),
 			})
 
-			cleanPath := filepath.FromSlash(r.URL.Path)
-			relPath := strings.TrimPrefix(cleanPath, string(filepath.Separator))
-			fullPath := filepath.Join(absPath, relPath)
+			// Dotfiles (.env, .git/config, .htpasswd) and source maps are
+			// not part of the site and must not leak through the tunnel.
+			if isSensitiveStaticPath(r.URL.Path) {
+				http.NotFound(w, r)
+				return
+			}
+
+			relPath := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+			fullPath := filepath.Join(absPath, filepath.FromSlash(relPath))
 			if info, err := os.Stat(fullPath); err == nil && info.IsDir() {
-				indexFile := filepath.Join(fullPath, "index.html")
-				if _, err := os.Stat(indexFile); err != nil {
-					a.pushLog(models.LogEntry{
+				if _, indexErr := os.Stat(filepath.Join(fullPath, "index.html")); indexErr != nil {
+					// No directory listings: they expose the whole tree.
+					logRequest(models.LogEntry{
 						Timestamp: nowStamp(),
 						Source:    "html-server",
 						Level:     "error",
-						Message:   fmt.Sprintf("Directory accessed but index.html not found: %s", fullPath),
+						Message:   fmt.Sprintf("Directory has no index.html: %s", fullPath),
 					})
+					http.NotFound(w, r)
+					return
 				}
 			} else if err != nil && os.IsNotExist(err) {
-				a.pushLog(models.LogEntry{
+				logRequest(models.LogEntry{
 					Timestamp: nowStamp(),
 					Source:    "html-server",
 					Level:     "error",
@@ -1461,7 +1535,7 @@ func (a *App) serveStaticDirectory(absPath string) (string, int, *http.Server, e
 				})
 			}
 
-			http.FileServer(http.Dir(absPath)).ServeHTTP(w, r)
+			fileServer.ServeHTTP(w, r)
 		}),
 	}
 
@@ -1566,7 +1640,11 @@ func (a *App) startProjectCommand(projectDir, commandText string) (<-chan string
 }
 
 func (a *App) streamProjectPipe(source string, pipe io.ReadCloser, urlCh chan<- string) {
+	defer pipe.Close()
+	// See cloudflare.StreamPipe: the 64 KB default stops the scanner on a
+	// long build/dev-server line and the child then blocks on a full pipe.
 	scanner := bufio.NewScanner(pipe)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -1594,18 +1672,29 @@ func (a *App) streamProjectPipe(source string, pipe io.ReadCloser, urlCh chan<- 
 			}
 		}
 	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
+		a.pushLog(models.LogEntry{
+			Timestamp: nowStamp(),
+			Source:    source,
+			Level:     "info",
+			Message:   "Project output stream ended early: " + err.Error(),
+		})
+	}
 }
 
 func (a *App) waitForProjectCommand(cmd *exec.Cmd, commandText string) {
 	err := cmd.Wait()
 
 	a.projectMu.Lock()
+	// A nil projectCmd means stopProjectCommand already detached this
+	// process: the non-zero exit is our own kill, not a project failure.
+	expectedStop := a.projectCmd != cmd
 	if a.projectCmd == cmd {
 		a.projectCmd = nil
 	}
 	a.projectMu.Unlock()
 
-	if err != nil {
+	if err != nil && !expectedStop {
 		a.pushLog(models.LogEntry{
 			Timestamp: nowStamp(),
 			Source:    "project",
@@ -2825,7 +2914,11 @@ func (a *App) stacksConfiguredBinary(settingsValue models.AppSettings, service s
 }
 
 func (a *App) managedCloudflaredPath() string {
-	return filepath.Join(a.appDataDir, "bin", "cloudflared.exe")
+	name := "cloudflared"
+	if runtime.GOOS == "windows" {
+		name = "cloudflared.exe"
+	}
+	return filepath.Join(a.appDataDir, "bin", name)
 }
 
 func (a *App) detectCloudflaredPath(configuredPath string) (string, error) {
@@ -2850,7 +2943,11 @@ func (a *App) downloadCloudflaredBinary(destination string) error {
 		return err
 	}
 
-	response, err := http.Get(downloadURL)
+	// A timeout and a size cap keep a stalled or hostile mirror from
+	// hanging the binding forever or filling the disk; the previous
+	// http.Get had neither.
+	client := &http.Client{Timeout: 5 * time.Minute}
+	response, err := client.Get(downloadURL)
 	if err != nil {
 		return fmt.Errorf("failed to download cloudflared: %w", err)
 	}
@@ -2866,7 +2963,10 @@ func (a *App) downloadCloudflaredBinary(destination string) error {
 		return err
 	}
 
-	_, copyErr := io.Copy(file, response.Body)
+	// cloudflared binaries are well under 200 MB; anything larger is not
+	// the file we asked for.
+	const maxCloudflaredBytes = 300 << 20
+	_, copyErr := io.Copy(file, io.LimitReader(response.Body, maxCloudflaredBytes))
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(tempPath)
@@ -2889,13 +2989,24 @@ func (a *App) downloadCloudflaredBinary(destination string) error {
 }
 
 func cloudflaredDownloadURL() (string, error) {
-	switch runtime.GOARCH {
-	case "amd64":
-		return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe", nil
-	case "386":
-		return "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-386.exe", nil
+	// Cloudflare publishes one asset per OS/arch. Choosing by arch alone
+	// downloaded a Windows .exe on macOS, which then failed to run.
+	const base = "https://github.com/cloudflare/cloudflared/releases/latest/download/"
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "windows/amd64":
+		return base + "cloudflared-windows-amd64.exe", nil
+	case "windows/386":
+		return base + "cloudflared-windows-386.exe", nil
+	case "darwin/amd64":
+		return base + "cloudflared-darwin-amd64.tgz", nil
+	case "darwin/arm64":
+		return base + "cloudflared-darwin-arm64.tgz", nil
+	case "linux/amd64":
+		return base + "cloudflared-linux-amd64", nil
+	case "linux/arm64":
+		return base + "cloudflared-linux-arm64", nil
 	default:
-		return "", fmt.Errorf("automatic cloudflared install is not supported on %s", runtime.GOARCH)
+		return "", fmt.Errorf("automatic cloudflared install is not supported on %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 }
 
@@ -3434,7 +3545,7 @@ func (a *App) stopBuild() {
 	if a.buildCmd == nil || a.buildCmd.Process == nil {
 		return
 	}
-	_ = exec.Command("taskkill", "/PID", fmt.Sprint(a.buildCmd.Process.Pid), "/T", "/F").Run()
+	_ = killProcessTree(a.buildCmd)
 	a.buildCmd = nil
 }
 
@@ -3450,8 +3561,29 @@ func (a *App) stopProjectCommand() {
 	if a.projectCmd == nil || a.projectCmd.Process == nil {
 		return
 	}
-	_ = exec.Command("taskkill", "/PID", fmt.Sprint(a.projectCmd.Process.Pid), "/T", "/F").Run()
+	_ = killProcessTree(a.projectCmd)
 	a.projectCmd = nil
+}
+
+// killProcessTree stops a child process and, on Windows, its whole tree so
+// a dev server started through cmd.exe does not survive the stop. On other
+// platforms it signals the process directly; taskkill does not exist there.
+func killProcessTree(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if runtime.GOOS == "windows" {
+		kill := exec.Command("taskkill", "/PID", fmt.Sprint(cmd.Process.Pid), "/T", "/F")
+		kill.SysProcAttr = sysproc.Hidden()
+		if err := kill.Run(); err == nil {
+			return nil
+		}
+	}
+	err := cmd.Process.Kill()
+	if errors.Is(err, os.ErrProcessDone) {
+		return nil
+	}
+	return err
 }
 
 func validateProjectSource(input models.ProjectPreset) error {
@@ -3510,14 +3642,23 @@ func randomSubdomain() string {
 }
 
 func openExternal(target string) error {
+	arg := filepath.Clean(target)
 	if _, err := url.Parse(target); err == nil && strings.HasPrefix(strings.ToLower(target), "http") {
-		cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+		arg = target
+	}
+
+	// rundll32 exists only on Windows; the macOS build shipped in releases
+	// used to fail every "open URL / open folder" action because of this.
+	switch runtime.GOOS {
+	case "windows":
+		cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", arg)
 		cmd.SysProcAttr = sysproc.Hidden()
 		return cmd.Start()
+	case "darwin":
+		return exec.Command("open", arg).Start()
+	default:
+		return exec.Command("xdg-open", arg).Start()
 	}
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", filepath.Clean(target))
-	cmd.SysProcAttr = sysproc.Hidden()
-	return cmd.Start()
 }
 
 type githubLatestRelease struct {

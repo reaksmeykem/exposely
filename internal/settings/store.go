@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -111,10 +112,22 @@ func (s *Store) write(settingsValue models.AppSettings) error {
 	if err != nil {
 		return err
 	}
-	// Snapshot the last known-good settings before overwriting. A torn
-	// or zeroed settings.json (crash / force-kill / instance race) is
-	// unrecoverable on its own — this file is what Load falls back to.
-	if current, readErr := os.ReadFile(s.path); readErr == nil {
+	current, readErr := os.ReadFile(s.path)
+	if readErr == nil {
+		// RefreshState runs after every action and persists normalised
+		// settings that are usually already on disk. Rewriting the file
+		// (and its backup) on every call is pure disk churn.
+		if bytes.Equal(current, content) {
+			// Still guarantee a known-good backup exists: a fresh install
+			// that never changes settings would otherwise have none.
+			if _, statErr := os.Stat(s.path + ".bak"); errors.Is(statErr, os.ErrNotExist) {
+				_ = os.WriteFile(s.path+".bak", current, 0o644)
+			}
+			return nil
+		}
+		// Snapshot the last known-good settings before overwriting. A torn
+		// or zeroed settings.json (crash / force-kill / instance race) is
+		// unrecoverable on its own — this file is what Load falls back to.
 		var probe models.AppSettings
 		if json.Unmarshal(current, &probe) == nil {
 			_ = os.WriteFile(s.path+".bak", current, 0o644)

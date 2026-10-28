@@ -14,7 +14,7 @@ func TestRenderNginxConfEmitsExtraListenPorts(t *testing.T) {
 		PHP:              true,
 		PHPPort:          9000,
 	}})
-	if !strings.Contains(conf, "listen       8090;") || !strings.Contains(conf, "listen       80;") {
+	if !strings.Contains(conf, "listen       127.0.0.1:8090;") || !strings.Contains(conf, "listen       127.0.0.1:80;") {
 		t.Fatalf("expected both listen directives:\n%s", conf)
 	}
 }
@@ -26,10 +26,10 @@ func TestRenderNginxConfSkipsDuplicateExtraPort(t *testing.T) {
 		ListenPort:       8090,
 		ExtraListenPorts: []int{8090, 0, -1},
 	}})
-	if strings.Count(conf, "listen       8090;") != 1 {
+	if strings.Count(conf, "listen       127.0.0.1:8090;") != 1 {
 		t.Fatalf("duplicate/invalid extra ports must be skipped:\n%s", conf)
 	}
-	if strings.Contains(conf, "listen       0;") || strings.Contains(conf, "listen       -1;") {
+	if strings.Contains(conf, "listen       127.0.0.1:0;") || strings.Contains(conf, "listen       127.0.0.1:-1;") {
 		t.Fatalf("invalid ports must not be emitted:\n%s", conf)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -91,6 +92,10 @@ func (c *cliStackRunner) applyConfigs(settingsValue models.AppSettings) {
 		}
 	}
 	if strings.TrimSpace(stack.PHPCGIBinaryPath) != "" {
+		if stack.UseManagedPHP {
+			dir := stacks.ActivePHPDirFor(c.appDataDir, stack.ManagedPHPVersion)
+			_, _ = stacks.HardenPHPIni(stacks.PhpIniPath(dir))
+		}
 		c.manager.SetConfig(stacks.ServicePHP, stacks.ServiceConfig{
 			BinaryPath: stack.PHPCGIBinaryPath,
 			Args:       stacks.PHPStartArgs(stack.EffectivePHPPort(), stack.EffectivePHPWorkers()),
@@ -141,10 +146,16 @@ func (c *cliStackRunner) startService(name string) error {
 	}
 
 	// Already running from a previous CLI invocation? The in-memory
-	// Manager is fresh every run, so consult the PID file.
+	// Manager is fresh every run, so consult the PID file. The recorded PID
+	// is only trusted when it still belongs to the configured binary — a
+	// recycled PID from a crashed run would otherwise block a real start.
 	if pid := stacks.LoadPID(c.appDataDir, normalized); stacks.ProcessAlive(pid) {
-		fmt.Printf("%s already running (pid %d)\n", normalized, pid)
-		return nil
+		if c.pidBelongsTo(normalized, pid) {
+			fmt.Printf("%s already running (pid %d)\n", normalized, pid)
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "warning: clearing stale %s pid file (pid %d is not the configured binary)\n", normalized, pid)
+		stacks.ClearPID(c.appDataDir, normalized)
 	}
 
 	status := c.manager.Start(normalized)
@@ -296,6 +307,13 @@ func (c *cliStackRunner) stopAll() {
 		c.manager.Stop(service)
 		pid := stacks.LoadPID(c.appDataDir, service)
 		if stacks.ProcessAlive(pid) {
+			// Never kill on a bare PID match: Windows recycles PIDs, and a
+			// stale file points at whatever process holds that number now.
+			if !c.pidBelongsTo(service, pid) {
+				fmt.Fprintf(os.Stderr, "warning: ignoring stale %s pid file (pid %d is not the configured binary)\n", service, pid)
+				stacks.ClearPID(c.appDataDir, service)
+				continue
+			}
 			if err := stacks.KillPID(pid); err == nil {
 				stoppedAny = true
 				fmt.Printf("%s stopped (pid %d)\n", service, pid)
@@ -308,6 +326,25 @@ func (c *cliStackRunner) stopAll() {
 	if !stoppedAny {
 		fmt.Println("Managed stack services stopped (nginx, php, mysql).")
 	}
+}
+
+// pidBelongsTo reports whether the PID recorded for service still belongs to
+// the configured service binary. Verification needs Windows process APIs; on
+// other platforms (or when nothing is configured) it keeps the previous
+// behaviour instead of disabling stop entirely.
+func (c *cliStackRunner) pidBelongsTo(service stacks.Service, pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	settingsValue, err := c.store.Load()
+	if err != nil {
+		return true
+	}
+	exe := strings.TrimSpace(c.configuredBinary(settingsValue, service))
+	if exe == "" || runtime.GOOS != "windows" {
+		return true
+	}
+	return stacks.ProcessMatches(pid, exe)
 }
 
 // openDatabaseManager registers phpMyAdmin as a localhost vhost on the
@@ -350,7 +387,7 @@ func (c *cliStackRunner) openDatabaseManager() (string, error) {
 		return "", err
 	}
 	// nginx: reload when our instance is already running, else start.
-	if pid := stacks.LoadPID(c.appDataDir, stacks.ServiceNginx); stacks.ProcessAlive(pid) {
+	if pid := stacks.LoadPID(c.appDataDir, stacks.ServiceNginx); stacks.ProcessAlive(pid) && c.pidBelongsTo(stacks.ServiceNginx, pid) {
 		nginxRoot := filepath.Dir(nginxPath)
 		confPath := filepath.Join(c.appDataDir, "stacks", "nginx", "nginx.conf")
 		if err := stacks.NginxConfigTest(nginxPath, nginxRoot, confPath); err != nil {
@@ -376,19 +413,31 @@ func (c *cliStackRunner) openDatabaseManager() (string, error) {
 }
 
 func openBrowser(target string) error {
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
-	cmd.SysProcAttr = sysproc.Hidden()
-	return cmd.Start()
+	switch runtime.GOOS {
+	case "windows":
+		cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+		cmd.SysProcAttr = sysproc.Hidden()
+		return cmd.Start()
+	case "darwin":
+		return exec.Command("open", target).Start()
+	default:
+		return exec.Command("xdg-open", target).Start()
+	}
 }
 
-func (c *cliStackRunner) printStatus() {	for _, st := range c.manager.AllStatus() {
+func (c *cliStackRunner) printStatus() {
+	for _, st := range c.manager.AllStatus() {
 		state := "stopped"
 		if st.Running {
 			state = fmt.Sprintf("running (pid %d)", st.PID)
 		} else if pid := stacks.LoadPID(c.appDataDir, st.Service); stacks.ProcessAlive(pid) {
 			// Started by a previous CLI run: the in-memory manager does
 			// not know about it, but the PID file does.
-			state = fmt.Sprintf("running (pid %d, from previous run)", pid)
+			if c.pidBelongsTo(st.Service, pid) {
+				state = fmt.Sprintf("running (pid %d, from previous run)", pid)
+			} else {
+				state = fmt.Sprintf("stale pid file (pid %d belongs to another process)", pid)
+			}
 		}
 		line := fmt.Sprintf("%-6s %s", st.Service, state)
 		if st.LastError != "" {

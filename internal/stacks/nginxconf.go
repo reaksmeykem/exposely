@@ -88,15 +88,24 @@ func writeServerBlock(b *strings.Builder, site SiteConfig, nginxRoot string) {
 	}
 
 	fmt.Fprintf(b, "    server {\n")
-	fmt.Fprintf(b, "        listen       %d;\n", listen)
+	// Loopback only. A bare `listen 8090;` binds 0.0.0.0, which puts every
+	// generated site — including phpMyAdmin, whose database root account is
+	// passwordless — on the local network. The tunnel dials 127.0.0.1, so
+	// nothing outside the machine needs the port.
+	fmt.Fprintf(b, "        listen       127.0.0.1:%d;\n", listen)
 	for _, extra := range site.ExtraListenPorts {
 		if extra > 0 && extra != listen {
-			fmt.Fprintf(b, "        listen       %d;\n", extra)
+			fmt.Fprintf(b, "        listen       127.0.0.1:%d;\n", extra)
 		}
 	}
 	fmt.Fprintf(b, "        server_name  %s;\n", serverName)
 	fmt.Fprintf(b, "        root         %s;\n", quotePath(root))
 	fmt.Fprintf(b, "        index        %s;\n", joinIndex(site.Index))
+	fmt.Fprintf(b, "\n")
+	fmt.Fprintf(b, "        # Never serve VCS metadata or dotfiles (.env, .git).\n")
+	fmt.Fprintf(b, "        location ~ /\\.(?!well-known/) {\n")
+	fmt.Fprintf(b, "            deny all;\n")
+	fmt.Fprintf(b, "        }\n")
 	fmt.Fprintf(b, "\n")
 	fmt.Fprintf(b, "        location / {\n")
 	fmt.Fprintf(b, "            try_files $uri $uri/ /index.php?$query_string;\n")
@@ -104,9 +113,15 @@ func writeServerBlock(b *strings.Builder, site SiteConfig, nginxRoot string) {
 
 	if site.PHP && site.PHPPort > 0 {
 		fmt.Fprintf(b, "\n        location ~ \\.php$ {\n")
+		// Split PATH_INFO and 404 anything that is not a real .php file.
+		// Without these, `/uploads/photo.jpg/x.php` matches this block and
+		// PHP (cgi.fix_pathinfo) walks back to photo.jpg and executes it.
+		fmt.Fprintf(b, "            fastcgi_split_path_info ^(.+\\.php)(/.+)$;\n")
+		fmt.Fprintf(b, "            try_files $fastcgi_script_name =404;\n")
 		fmt.Fprintf(b, "            fastcgi_pass   127.0.0.1:%d;\n", site.PHPPort)
 		fmt.Fprintf(b, "            fastcgi_index  index.php;\n")
 		fmt.Fprintf(b, "            fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;\n")
+		fmt.Fprintf(b, "            fastcgi_param  PATH_INFO        $fastcgi_path_info;\n")
 		// `include fastcgi_params;` resolves relative to the -p prefix,
 		// not the conf file directory, so it breaks when the generated
 		// conf lives outside the nginx install (our case). Always emit

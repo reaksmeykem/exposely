@@ -64,7 +64,12 @@ func NewManager(configPath string, logSink func(models.LogEntry), statusSink fun
 func (m *Manager) Status() models.TunnelStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.status
+	// Copy the slices: the caller serialises this snapshot after the lock is
+	// released, while cloudflared may still be appending log lines.
+	clone := m.status
+	clone.LastLogs = append([]models.LogEntry(nil), m.status.LastLogs...)
+	clone.ActiveHostnames = append([]string(nil), m.status.ActiveHostnames...)
+	return clone
 }
 
 func (m *Manager) DetectCloudflared(configuredPath string) (string, error) {
@@ -193,7 +198,10 @@ func (m *Manager) StartNamedTunnel(cloudflaredPath, configPath, tunnelName, tunn
 	}
 
 	metricsAddr := reserveMetricsAddr(m)
-	args := []string{"tunnel", "--config", configPath, "--loglevel", "info"}
+	// --no-autoupdate keeps the process we hold a handle to: a cloudflared
+	// that replaces itself mid-run re-execs under a new PID, leaving the
+	// manager tracking a dead process while the tunnel stays up.
+	args := []string{"tunnel", "--config", configPath, "--loglevel", "info", "--no-autoupdate"}
 	if metricsAddr != "" {
 		args = append(args, "--metrics", metricsAddr)
 	}
@@ -276,6 +284,10 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 		m.mu.Unlock()
 		return err
 	}
+	// waitForProcess removes the temp home once the process exits; these
+	// early paths never reach it, so clean up here instead of leaving a
+	// directory behind on every failed start.
+	cleanupHome := func() { _ = os.RemoveAll(tempHome) }
 
 	metricsAddr := reserveMetricsAddr(m)
 	args := quickTunnelArgs(serviceURL, hostHeader, opts)
@@ -299,16 +311,19 @@ func (m *Manager) StartQuickTunnelWithHTML(cloudflaredPath, serviceURL, hostHead
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		m.mu.Unlock()
+		cleanupHome()
 		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		m.mu.Unlock()
+		cleanupHome()
 		return err
 	}
 
 	if err := cmd.Start(); err != nil {
 		m.mu.Unlock()
+		cleanupHome()
 		return err
 	}
 
@@ -396,25 +411,35 @@ func (m *Manager) StopTunnel() error {
 	if cmd != nil && cmd.Process != nil {
 		m.stopPID = cmd.Process.Pid
 	}
+	server := m.detachLocked()
 	m.mu.Unlock()
 
 	if cmd == nil || cmd.Process == nil {
+		shutdownHTTPServer(server)
 		return nil
 	}
 
-	killCmd := exec.Command("taskkill", "/PID", fmt.Sprint(cmd.Process.Pid), "/T", "/F")
-	if runtime.GOOS == "windows" {
-		killCmd.SysProcAttr = sysproc.Hidden()
-	}
-	if err := killCmd.Run(); err != nil {
-		return err
+	// Kill outside the lock: taskkill can take hundreds of milliseconds and
+	// Status()/Usage() are called from other goroutines while it runs.
+	killErr := killProcessTree(cmd)
+	// Always shut the static server down, even when the kill failed: leaving
+	// it listening would keep serving the shared folder after "stop".
+	shutdownHTTPServer(server)
+	if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+		m.pushLog("cloudflared", "error", "Failed to stop cloudflared: "+killErr.Error())
+		return killErr
 	}
 
-	m.mu.Lock()
-	if m.htmlServer != nil {
-		_ = m.htmlServer.Shutdown(context.Background())
-		m.htmlServer = nil
-	}
+	m.pushLog("cloudflared", "info", "Stopped cloudflared process")
+	return nil
+}
+
+// detachLocked clears the process and bookkeeping state and returns the
+// static server for the caller to shut down outside the manager lock.
+// Callers must hold m.mu.
+func (m *Manager) detachLocked() *http.Server {
+	server := m.htmlServer
+	m.htmlServer = nil
 	if m.usageStop != nil {
 		close(m.usageStop)
 		m.usageStop = nil
@@ -428,14 +453,44 @@ func (m *Manager) StopTunnel() error {
 	m.status.HTMLServerPort = 0
 	m.status.Usage = nil
 	m.emitStatusLocked()
-	m.mu.Unlock()
+	return server
+}
 
-	m.pushLog("cloudflared", "info", "Stopped cloudflared process")
-	return nil
+// killProcessTree terminates the cloudflared process. Windows gets the task
+// tree killed so a re-exec'd child cannot survive; other platforms signal the
+// process directly. A process that has already exited is not an error.
+func killProcessTree(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if runtime.GOOS == "windows" {
+		kill := exec.Command("taskkill", "/PID", fmt.Sprint(cmd.Process.Pid), "/T", "/F")
+		kill.SysProcAttr = sysproc.Hidden()
+		if err := kill.Run(); err == nil {
+			return nil
+		}
+	}
+	return cmd.Process.Kill()
+}
+
+// shutdownHTTPServer stops the static file server with a bounded wait so a
+// stalled request cannot hold the tunnel teardown open indefinitely.
+func shutdownHTTPServer(server *http.Server) {
+	if server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = server.Shutdown(ctx)
 }
 
 func (m *Manager) StreamPipe(source string, pipe io.ReadCloser, readyCh ...chan<- string) {
+	defer pipe.Close()
+	// The default scanner buffer is 64 KB. A single long line (minified
+	// bundle output, a huge JSON log record) stops the scanner while the
+	// child keeps writing, and the child then blocks on a full pipe.
 	scanner := bufio.NewScanner(pipe)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -473,6 +528,23 @@ func (m *Manager) StreamPipe(source string, pipe io.ReadCloser, readyCh ...chan<
 			}
 		}
 	}
+	// Report a truncated stream instead of silently going quiet; a closed
+	// pipe on shutdown is expected and not worth surfacing.
+	if err := scanner.Err(); err != nil && !isClosedPipeError(err) {
+		m.pushLog(source, "warn", "log stream ended early: "+err.Error())
+	}
+}
+
+// isClosedPipeError reports whether the read failure is just the process
+// going away, which happens on every normal stop.
+func isClosedPipeError(err error) bool {
+	if err == nil || errors.Is(err, os.ErrClosed) || errors.Is(err, io.EOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "file already closed") ||
+		strings.Contains(msg, "the handle is invalid") ||
+		strings.Contains(msg, "use of closed")
 }
 
 func (m *Manager) waitForProcess(mode string, cmd *exec.Cmd) {
@@ -485,10 +557,8 @@ func (m *Manager) waitForProcess(mode string, cmd *exec.Cmd) {
 	}
 
 	m.mu.Lock()
-	if m.htmlServer != nil {
-		_ = m.htmlServer.Shutdown(context.Background())
-		m.htmlServer = nil
-	}
+	server := m.htmlServer
+	m.htmlServer = nil
 	if m.usageStop != nil {
 		close(m.usageStop)
 		m.usageStop = nil
@@ -523,6 +593,10 @@ func (m *Manager) waitForProcess(mode string, cmd *exec.Cmd) {
 	}
 	m.emitStatusLocked()
 	m.mu.Unlock()
+
+	// Outside the lock: Shutdown waits for in-flight requests, and holding
+	// m.mu while it does would freeze every Status()/Usage()/start call.
+	shutdownHTTPServer(server)
 
 	if quickHome != "" {
 		_ = os.RemoveAll(quickHome)
